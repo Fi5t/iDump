@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  resolve-frida:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.frida.outputs.version }}
+    steps:
+      - id: frida
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="$(gh api repos/frida/frida/releases/latest --jq '.tag_name')"
+          echo "Latest Frida release: ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve-frida
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+            devkit_os: macos
+            devkit_arch: arm64
+          - os: macos-latest
+            target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            cc: clang -arch x86_64
+            devkit_os: macos
+            devkit_arch: x86_64
+          - os: ubuntu-latest
+            target: linux-amd64
+            devkit_os: linux
+            devkit_arch: x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      FRIDA_VERSION: ${{ needs.resolve-frida.outputs.version }}
+      ARTIFACT: idump-${{ matrix.target }}-frida-${{ needs.resolve-frida.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download Frida devkit
+        shell: bash
+        env:
+          DEVKIT_OS: ${{ matrix.devkit_os }}
+          DEVKIT_ARCH: ${{ matrix.devkit_arch }}
+        run: bash scripts/get-devkit.sh "$FRIDA_VERSION"
+
+      - name: Build
+        shell: bash
+        env:
+          CGO_ENABLED: 1
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          DEVKIT="$(pwd)/build/frida-devkit"
+          CGO_CFLAGS="-I${DEVKIT}" \
+          CGO_LDFLAGS="-L${DEVKIT}" \
+          go build -o "$ARTIFACT" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: ${{ env.ARTIFACT }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: artifacts/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*

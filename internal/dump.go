@@ -21,12 +21,13 @@ import (
 )
 
 type dumpState struct {
-	mu       sync.Mutex
-	once     sync.Once
-	fileDict map[string]string
-	done     chan struct{}
-	err      chan error
-	spinner  *spinner.Spinner
+	mu        sync.Mutex
+	once      sync.Once
+	fileDict  map[string]string
+	fileBytes map[string]int64
+	done      chan struct{}
+	err       chan error
+	spinner   *spinner.Spinner
 }
 
 // StartDump injects the Frida agent into session, transfers decrypted binaries
@@ -43,17 +44,47 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 	spin.Start()
 
 	state := &dumpState{
-		fileDict: make(map[string]string),
-		done:     make(chan struct{}),
-		err:      make(chan error, 1),
-		spinner:  spin,
+		fileDict:  make(map[string]string),
+		fileBytes: make(map[string]int64),
+		done:      make(chan struct{}),
+		err:       make(chan error, 1),
+		spinner:   spin,
 	}
+
+	// msgCh decouples the Frida GLib callback thread from message processing.
+	// The callback must return promptly so the GLib event loop stays free to
+	// deliver other signals (notably "detached"). In SSH mode the handler does
+	// blocking SFTP I/O, so without this the detach signal could never fire
+	// while a download was in progress.
+	// The GLib thread delivers messages one at a time (never re-enters until the
+	// callback returns), so the channel is always filled in arrival order.
+	msgCh := make(chan [2][]byte, 512)
 
 	// Register BEFORE Load so frida-go's Load() sees hasHandler=true and skips
 	// its internal connectClosure call — otherwise the signal fires twice per message.
 	script.On("message", func(message string, data []byte) {
-		if err := handleFridaMessage(message, data, sftpClient, payloadPath, state); err != nil {
-			ui.Warn(fmt.Sprintf("message handler error: %v", err))
+		select {
+		case msgCh <- [2][]byte{[]byte(message), data}:
+		default:
+		}
+	})
+
+	go func() {
+		for pair := range msgCh {
+			if err := handleFridaMessage(string(pair[0]), pair[1], sftpClient, payloadPath, state); err != nil {
+				select {
+				case state.err <- err:
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	session.On("detached", func(reason frida.SessionDetachReason, crash *frida.Crash) {
+		select {
+		case state.err <- fmt.Errorf("session detached: %s", reason):
+		default:
 		}
 	})
 
@@ -167,9 +198,12 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 			basename, _ := dumpVal.(string)
 			chunk := intPayload(payload, "chunk", 0)
 			numChunks := intPayload(payload, "chunks", 1)
+			totalSize := int64(intPayload(payload, "size", 0))
 			localPath := filepath.Join(payloadPath, basename)
 			state.mu.Lock()
-			state.spinner.Suffix = " " + basename
+			state.fileBytes[basename] += int64(len(data))
+			received := state.fileBytes[basename]
+			state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", fmtSize(received), fmtSize(totalSize), basename)
 			state.mu.Unlock()
 			if err := appendChunk(localPath, data, chunk); err != nil {
 				return fmt.Errorf("write %s chunk %d: %w", basename, chunk, err)
@@ -206,9 +240,12 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 				return fmt.Errorf("mkdir for app_file %s: %w", relPath, err)
 			}
 		}
+		totalSize := int64(intPayload(payload, "size", 0))
 		label := filepath.Join(appBaseName, relPath)
 		state.mu.Lock()
-		state.spinner.Suffix = " " + label
+		state.fileBytes[label] += int64(len(data))
+		received := state.fileBytes[label]
+		state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", fmtSize(received), fmtSize(totalSize), label)
 		state.mu.Unlock()
 		if err := appendChunk(localPath, data, chunk); err != nil {
 			return fmt.Errorf("write app_file %s chunk %d: %w", relPath, chunk, err)
@@ -258,9 +295,29 @@ func sftpDownloadFile(client *sftp.Client, remotePath, localPath string, spin *s
 		}
 	}()
 
-	spin.Suffix = " " + filepath.Base(remotePath)
-	_, err = io.Copy(lf, rf)
+	name := filepath.Base(remotePath)
+	var totalSize int64
+	if stat, serr := rf.Stat(); serr == nil {
+		totalSize = stat.Size()
+	}
+	spin.Suffix = fmt.Sprintf(" [0 B / %s] %s", fmtSize(totalSize), name)
+	_, err = io.Copy(lf, &countingReader{r: rf, spin: spin, name: name, total: totalSize})
 	return err
+}
+
+type countingReader struct {
+	r     io.Reader
+	n     int64
+	total int64
+	spin  *spinner.Spinner
+	name  string
+}
+
+func (cr *countingReader) Read(p []byte) (n int, err error) {
+	n, err = cr.r.Read(p)
+	cr.n += int64(n)
+	cr.spin.Suffix = fmt.Sprintf(" [%s / %s] %s", fmtSize(cr.n), fmtSize(cr.total), cr.name)
+	return
 }
 
 func sftpDownloadDir(client *sftp.Client, remotePath, localBase string, spin *spinner.Spinner) error {

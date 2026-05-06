@@ -39,9 +39,10 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "idump [flags] [target]",
-	Short: "Decrypt and dump iOS app binaries to an IPA file via USB",
-	Args:  cobra.ArbitraryArgs,
+	SilenceUsage: true,
+	Use:          "idump [flags] [target]",
+	Short:        "Decrypt and dump iOS app binaries to an IPA file via USB",
+	Args:         cobra.ArbitraryArgs,
 	Long: `idump decrypts and dumps iOS app binaries from a USB-connected device using Frida.
 
 File contents are transferred directly through Frida messages — no SSH required.

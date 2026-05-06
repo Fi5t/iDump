@@ -14,10 +14,11 @@ import (
 func newTestState() *dumpState {
 	spin := spinner.New(spinner.CharSets[11], 100*time.Millisecond)
 	return &dumpState{
-		fileDict: make(map[string]string),
-		done:     make(chan struct{}),
-		err:      make(chan error, 1),
-		spinner:  spin,
+		fileDict:  make(map[string]string),
+		fileBytes: make(map[string]int64),
+		done:      make(chan struct{}),
+		err:       make(chan error, 1),
+		spinner:   spin,
 	}
 }
 
@@ -163,6 +164,24 @@ func TestHandleFridaMessage_AppFileChunkZeroTruncates(t *testing.T) {
 	}
 	if string(got) != "second" {
 		t.Errorf("content = %q, want %q (chunk 0 must truncate)", got, "second")
+	}
+}
+
+func TestStartDump_SessionDetachUnblocksErr(t *testing.T) {
+	t.Parallel()
+
+	state := newTestState()
+	select {
+	case state.err <- fmt.Errorf("session detached: process-terminated"):
+	default:
+	}
+	select {
+	case err := <-state.err:
+		if err == nil {
+			t.Fatal("expected non-nil error")
+		}
+	default:
+		t.Fatal("state.err was not signalled")
 	}
 }
 

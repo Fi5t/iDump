@@ -75,7 +75,7 @@ jobs:
           DEVKIT="$(pwd)/build/frida-devkit"
           CGO_CFLAGS="-I${DEVKIT}" \
           CGO_LDFLAGS="-L${DEVKIT}" \
-          go build -o "$ARTIFACT" .
+          go build -trimpath -ldflags="-s -w" -o "$ARTIFACT" .
 
       - uses: actions/upload-artifact@v4
         with:

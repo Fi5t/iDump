@@ -42,7 +42,7 @@ func GetUSBDevice(ctx context.Context) (frida.DeviceInt, error) {
 	}
 }
 
-func getApplications(device frida.DeviceInt) ([]*frida.Application, error) {
+func GetApplications(device frida.DeviceInt) ([]*frida.Application, error) {
 	apps, err := device.EnumerateApplications("", frida.ScopeMinimal)
 	if err != nil {
 		return nil, fmt.Errorf("failed to enumerate applications: %w", err)
@@ -51,7 +51,7 @@ func getApplications(device frida.DeviceInt) ([]*frida.Application, error) {
 }
 
 func ListApplications(device frida.DeviceInt) error {
-	apps, err := getApplications(device)
+	apps, err := GetApplications(device)
 	if err != nil {
 		return err
 	}
@@ -100,7 +100,7 @@ func appPIDStr(a *frida.Application) string {
 func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID string) (*frida.Session, int, string, string, error) {
 	ui.Step("Attaching to " + nameOrBundleID)
 
-	apps, err := getApplications(device)
+	apps, err := GetApplications(device)
 	if err != nil {
 		return nil, 0, "", "", err
 	}

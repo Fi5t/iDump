@@ -76,6 +76,44 @@ idump remote -K ~/.ssh/id_rsa com.example.App       # SSH key authentication
 idump remote -u mobile -P password com.example.App  # custom credentials
 ```
 
+### Dump multiple apps
+
+Pass multiple targets at once, or use `--dump-all` to dump every app on the device. Both USB and SSH/SFTP modes support batch dumping.
+
+```bash
+# Dump a specific set of apps
+idump com.example.App1 com.example.App2 com.example.App3
+
+# Dump all installed apps into ./ipa-out/
+idump --dump-all -d ./ipa-out
+
+# Dump all non-Apple apps (skip com.apple.* identifiers)
+idump --dump-all --skip-system -d ./ipa-out
+
+# Dump only apps whose bundle ID contains a substring
+idump --dump-all --filter com.mycompany. -d ./ipa-out
+
+# Same flags work in SSH/SFTP mode
+idump remote com.example.App1 com.example.App2 -d ./ipa-out
+idump remote --dump-all --skip-system -d ./ipa-out
+```
+
+When dumping more than one app, `idump` prints a progress prefix (`[1/3] com.example.App`) before each target and a summary table when all are done:
+
+```
+  #  Name              Status    File / Note
+  ────────────────────────────────────────────────────────
+  1  My App            ✓         My App.ipa (42.1 MB)
+  2  Another App       ✓         Another App.ipa (18.7 MB)
+  3  Hardened App      ✗ failed  session detached: process-terminated
+  ────────────────────────────────────────────────────────
+  3 processed · 2 succeeded · 1 failed
+```
+
+Failed apps can be retried individually, optionally with `--dodge` or `--dodge=advanced`.
+
+> **Note:** `--output` / `-o` is for single-app use only and cannot be combined with multiple targets or `--dump-all`. Use `--output-dir` / `-d` to control the destination directory for batch dumps.
+
 ### Bypass anti-Frida protection
 
 Some apps detect Frida and crash before the dump script can run. Use spawn-gating to inject a bypass before the app starts:
@@ -108,7 +146,11 @@ idump remote --dodge=advanced com.example.App
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--list` | `-l` | — | List installed apps |
-| `--output` | `-o` | app display name | Output IPA filename |
+| `--output` | `-o` | app display name | Output IPA filename (single-app only; cannot be used with multiple targets or `--dump-all`) |
+| `--output-dir` | `-d` | `.` | Directory to save IPA files (batch-friendly) |
+| `--dump-all` | `-a` | — | Dump all installed apps |
+| `--skip-system` | — | — | Skip `com.apple.*` apps (use with `--dump-all`) |
+| `--filter` | — | — | Include only apps whose bundle ID contains this string (use with `--dump-all`) |
 | `--dodge` | — | — | Basic bypass: hooks libc symbols via spawn-gating |
 | `--dodge=advanced` | — | — | Advanced bypass for hardened apps (raw syscall hooks, environ scrub, VM scan) |
 | `--early` | — | — | Path to custom bypass script (`.js` or `.ts`); mutually exclusive with `--dodge` |
@@ -117,7 +159,11 @@ idump remote --dodge=advanced com.example.App
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--output` | `-o` | app display name | Output IPA filename |
+| `--output` | `-o` | app display name | Output IPA filename (single-app only; cannot be used with multiple targets or `--dump-all`) |
+| `--output-dir` | `-d` | `.` | Directory to save IPA files (batch-friendly) |
+| `--dump-all` | `-a` | — | Dump all installed apps |
+| `--skip-system` | — | — | Skip `com.apple.*` apps (use with `--dump-all`) |
+| `--filter` | — | — | Include only apps whose bundle ID contains this string (use with `--dump-all`) |
 | `--host` | `-H` | `localhost` | SSH hostname |
 | `--port` | `-p` | `2222` | SSH port |
 | `--user` | `-u` | `root` | SSH username |

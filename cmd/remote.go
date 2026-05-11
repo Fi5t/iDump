@@ -27,9 +27,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/Fi5t/idump/internal"
 	"github.com/Fi5t/idump/internal/ui"
@@ -46,18 +44,22 @@ const (
 )
 
 var (
-	remoteOutput    string
-	remoteHost      string
-	remotePort      int
-	remoteUser      string
-	remotePassword  string
-	remoteKey       string
-	remoteDodgeTier string
-	remoteEarly     string
+	remoteOutput     string
+	remoteHost       string
+	remotePort       int
+	remoteUser       string
+	remotePassword   string
+	remoteKey        string
+	remoteDodgeTier  string
+	remoteEarly      string
+	remoteDumpAll    bool
+	remoteSkipSystem bool
+	remoteFilter     string
+	remoteOutputDir  string
 )
 
 var remoteCmd = &cobra.Command{
-	Use:   "remote [flags] <target>",
+	Use:   "remote [flags] [target ...]",
 	Short: "Decrypt and dump iOS app binaries to an IPA file via SSH/SFTP",
 	Long: `remote connects to the device over SSH and downloads decrypted binaries via SFTP.
 
@@ -68,26 +70,32 @@ Examples:
   idump remote com.example.App
   idump remote -H 192.168.1.10 -p 22 com.example.App
   idump remote -K ~/.ssh/id_rsa com.example.App
+  idump remote com.app1 com.app2 com.app3
+  idump remote --dump-all --skip-system -d ./ipa-out
   idump remote --dodge com.example.App
   idump remote --dodge=advanced com.example.App
   idump remote --early bypass.js com.example.App`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Compile or load the bypass script before touching the device so that
-		// errors surface immediately without waiting for a spawn operation.
 		bypassScript, err := resolveBypassScript(remoteDodgeTier, remoteEarly)
 		if err != nil {
 			return err
 		}
 
+		if remoteOutput != "" && (len(args) > 1 || remoteDumpAll) {
+			return fmt.Errorf("--output cannot be used with multiple targets or --dump-all")
+		}
+
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
-
-		target := args[0]
 
 		device, err := internal.GetUSBDevice(ctx)
 		if err != nil {
 			return err
+		}
+
+		if !remoteDumpAll && len(args) == 0 {
+			return fmt.Errorf("target app required (name or bundle ID); use --dump-all to dump all apps")
 		}
 
 		sshClient, err := dialSSH(remoteHost, remotePort, remoteUser, remotePassword, remoteKey)
@@ -102,39 +110,47 @@ Examples:
 		}
 		defer func() { _ = sftpClient.Close() }()
 
-		baseDir, err := os.MkdirTemp("", "idump-payload-*")
-		if err != nil {
-			return fmt.Errorf("temp dir: %w", err)
-		}
-		defer func() { _ = os.RemoveAll(baseDir) }()
-		payloadPath := filepath.Join(baseDir, "Payload")
-		if err := os.MkdirAll(payloadPath, 0o755); err != nil {
-			return fmt.Errorf("mkdir payload: %w", err)
-		}
-
-		session, displayName, err := internal.OpenApp(ctx, device, target, bypassScript)
+		targets, err := resolveTargets(device, args, remoteDumpAll, remoteSkipSystem, remoteFilter)
 		if err != nil {
 			return err
 		}
-
-		ipaName := remoteOutput
-		if ipaName == "" {
-			ipaName = displayName
+		if len(targets) == 0 {
+			return fmt.Errorf("no apps matched the given criteria")
 		}
-		ipaName = strings.TrimSuffix(ipaName, ".ipa")
 
-		return internal.StartDump(ctx, session, sftpClient, payloadPath, ".", ipaName)
+		ipaOverride, effectiveOutputDir := resolveOutputArgs(remoteOutput, remoteOutputDir)
+		results := make([]DumpResult, 0, len(targets))
+		for i, target := range targets {
+			if len(targets) > 1 {
+				ui.Step(fmt.Sprintf("[%d/%d] %s", i+1, len(targets), target))
+			}
+			r := dumpOne(ctx, device, target, bypassScript, effectiveOutputDir, ipaOverride, sftpClient)
+			results = append(results, r)
+			if r.Err != nil {
+				ui.Err(r.Err.Error())
+			}
+		}
+
+		printSummary(results)
+
+		for _, r := range results {
+			if r.Err != nil {
+				return r.Err
+			}
+		}
+		return nil
 	},
 }
 
 func init() {
-	remoteCmd.Flags().StringVarP(&remoteOutput, "output", "o", "", "Output IPA filename (default: app display name)")
+	remoteCmd.Flags().StringVarP(&remoteOutput, "output", "o", "", "Output IPA filename (default: app display name; single-app only)")
 	remoteCmd.Flags().StringVarP(&remoteHost, "host", "H", defaultSSHHost, "SSH hostname")
 	remoteCmd.Flags().IntVarP(&remotePort, "port", "p", defaultSSHPort, "SSH port")
 	remoteCmd.Flags().StringVarP(&remoteUser, "user", "u", defaultSSHUser, "SSH username")
 	remoteCmd.Flags().StringVarP(&remotePassword, "password", "P", defaultSSHPassword, "SSH password")
 	remoteCmd.Flags().StringVarP(&remoteKey, "key", "K", "", "SSH private key file path")
 	registerBypassFlags(remoteCmd, &remoteDodgeTier, &remoteEarly)
+	registerBatchFlags(remoteCmd, &remoteDumpAll, &remoteSkipSystem, &remoteFilter, &remoteOutputDir)
 	rootCmd.AddCommand(remoteCmd)
 }
 

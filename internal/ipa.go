@@ -88,19 +88,8 @@ func zipDir(baseDir, subDir, destZip string) (err error) {
 		if err != nil {
 			return err
 		}
-		defer func() { _ = src.Close() }()
 		_, err = io.Copy(fw, src)
+		_ = src.Close()
 		return err
 	})
-}
-
-func fmtSize(b int64) string {
-	switch {
-	case b >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(b)/float64(1<<20))
-	case b >= 1<<10:
-		return fmt.Sprintf("%.1f KB", float64(b)/float64(1<<10))
-	default:
-		return fmt.Sprintf("%d B", b)
-	}
 }

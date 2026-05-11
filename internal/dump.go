@@ -132,7 +132,7 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 	spin.Stop()
 	ipaPath := filepath.Join(outputDir, ipaName+".ipa")
 	if info, err := os.Stat(ipaPath); err == nil {
-		ui.OK(fmt.Sprintf("Saved %s (%s)", ipaName+".ipa", fmtSize(info.Size())))
+		ui.OK(fmt.Sprintf("Saved %s (%s)", ipaPath, ui.FmtSize(info.Size())))
 	}
 
 	return session.Detach()
@@ -202,7 +202,6 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		}
 
 		if sftpClient == nil {
-			// USB mode: file contents arrive in data, possibly split across chunks.
 			basename, _ := dumpVal.(string)
 			chunk := intPayload(payload, "chunk", 0)
 			numChunks := intPayload(payload, "chunks", 1)
@@ -211,7 +210,7 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 			state.mu.Lock()
 			state.fileBytes[basename] += int64(len(data))
 			received := state.fileBytes[basename]
-			state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", fmtSize(received), fmtSize(totalSize), basename)
+			state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", ui.FmtSize(received), ui.FmtSize(totalSize), basename)
 			state.mu.Unlock()
 			if err := appendChunk(localPath, data, chunk); err != nil {
 				return fmt.Errorf("write %s chunk %d: %w", basename, chunk, err)
@@ -222,7 +221,6 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 				state.mu.Unlock()
 			}
 		} else {
-			// SSH mode: dumpVal is a full remote path; download via SFTP.
 			remotePath, _ := dumpVal.(string)
 			localPath := filepath.Join(payloadPath, filepath.Base(remotePath))
 			if err := sftpDownloadFile(sftpClient, remotePath, localPath, state.spinner); err != nil {
@@ -237,7 +235,6 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		}
 	}
 
-	// USB mode: individual file from the app bundle, possibly split across chunks.
 	if appFileVal, ok := payload["app_file"]; ok {
 		relPath, _ := appFileVal.(string)
 		appBaseName, _ := payload["app"].(string)
@@ -255,7 +252,7 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		state.mu.Lock()
 		state.fileBytes[label] += int64(len(data))
 		received := state.fileBytes[label]
-		state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", fmtSize(received), fmtSize(totalSize), label)
+		state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", ui.FmtSize(received), ui.FmtSize(totalSize), label)
 		state.mu.Unlock()
 		if err := appendChunk(localPath, data, chunk); err != nil {
 			return fmt.Errorf("write app_file %s chunk %d: %w", relPath, chunk, err)
@@ -269,7 +266,6 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		return nil
 	}
 
-	// SSH mode: app bundle path — download recursively via SFTP.
 	if appVal, ok := payload["app"]; ok && sftpClient != nil {
 		remotePath, _ := appVal.(string)
 		if err := sftpDownloadDir(sftpClient, remotePath, payloadPath, state.spinner); err != nil {
@@ -310,7 +306,7 @@ func sftpDownloadFile(client *sftp.Client, remotePath, localPath string, spin *s
 	if stat, serr := rf.Stat(); serr == nil {
 		totalSize = stat.Size()
 	}
-	spin.Suffix = fmt.Sprintf(" [0 B / %s] %s", fmtSize(totalSize), name)
+	spin.Suffix = fmt.Sprintf(" [0 B / %s] %s", ui.FmtSize(totalSize), name)
 	_, err = io.Copy(lf, &countingReader{r: rf, spin: spin, name: name, total: totalSize})
 	return err
 }
@@ -328,7 +324,7 @@ func (cr *countingReader) Read(p []byte) (n int, err error) {
 	n, err = cr.r.Read(p)
 	cr.n += int64(n)
 	if cr.n-cr.lastPrint >= 64*1024 || err == io.EOF {
-		cr.spin.Suffix = fmt.Sprintf(" [%s / %s] %s", fmtSize(cr.n), fmtSize(cr.total), cr.name)
+		cr.spin.Suffix = fmt.Sprintf(" [%s / %s] %s", ui.FmtSize(cr.n), ui.FmtSize(cr.total), cr.name)
 		cr.lastPrint = cr.n
 	}
 	return

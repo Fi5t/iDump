@@ -56,7 +56,7 @@ func ListApplications(device frida.DeviceInt) error {
 		return err
 	}
 
-	sort.Slice(apps, func(i, j int) bool {
+	sort.SliceStable(apps, func(i, j int) bool {
 		iRunning := apps[i].PID() != 0
 		jRunning := apps[j].PID() != 0
 		if iRunning != jRunning {
@@ -96,15 +96,13 @@ func appPIDStr(a *frida.Application) string {
 	return strconv.Itoa(int(a.PID()))
 }
 
-// OpenTargetApp finds the app by name or bundle ID, kills any running instance,
-// spawns it fresh, attaches a Frida session, and returns the session along with
-// the display name and bundle ID.
-func OpenTargetApp(ctx context.Context, device frida.DeviceInt, nameOrBundleID string) (*frida.Session, string, string, error) {
+// Does NOT resume the process; call device.Resume(pid) after injecting any bypass script.
+func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID string) (*frida.Session, int, string, string, error) {
 	ui.Step("Attaching to " + nameOrBundleID)
 
 	apps, err := getApplications(device)
 	if err != nil {
-		return nil, "", "", err
+		return nil, 0, "", "", err
 	}
 
 	var pid int
@@ -119,7 +117,7 @@ func OpenTargetApp(ctx context.Context, device frida.DeviceInt, nameOrBundleID s
 	}
 
 	if bundleID == "" {
-		return nil, "", "", fmt.Errorf("app not found: %s", nameOrBundleID)
+		return nil, 0, "", "", fmt.Errorf("app not found: %s", nameOrBundleID)
 	}
 
 	if pid != 0 {
@@ -129,23 +127,52 @@ func OpenTargetApp(ctx context.Context, device frida.DeviceInt, nameOrBundleID s
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			return nil, "", "", ctx.Err()
+			return nil, 0, "", "", ctx.Err()
 		case <-timer.C:
 		}
 	}
 
 	spawnedPID, err := device.Spawn(bundleID, nil)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to spawn %s: %w", bundleID, err)
+		return nil, 0, "", "", fmt.Errorf("failed to spawn %s: %w", bundleID, err)
 	}
 	session, err := device.Attach(spawnedPID, nil)
 	if err != nil {
 		_ = device.Kill(spawnedPID)
-		return nil, "", "", fmt.Errorf("failed to attach to pid %d: %w", spawnedPID, err)
-	}
-	if err := device.Resume(spawnedPID); err != nil {
-		return nil, "", "", fmt.Errorf("failed to resume pid %d: %w", spawnedPID, err)
+		return nil, 0, "", "", fmt.Errorf("failed to attach to pid %d: %w", spawnedPID, err)
 	}
 
+	return session, spawnedPID, displayName, bundleID, nil
+}
+
+func OpenTargetApp(ctx context.Context, device frida.DeviceInt, nameOrBundleID string) (*frida.Session, string, string, error) {
+	session, pid, displayName, bundleID, err := SpawnAndAttach(ctx, device, nameOrBundleID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if err := device.Resume(pid); err != nil {
+		return nil, "", "", fmt.Errorf("failed to resume pid %d: %w", pid, err)
+	}
 	return session, displayName, bundleID, nil
+}
+
+func OpenApp(ctx context.Context, device frida.DeviceInt, target, bypassScript string) (*frida.Session, string, error) {
+	if bypassScript != "" {
+		session, pid, displayName, _, err := SpawnAndAttach(ctx, device, target)
+		if err != nil {
+			return nil, "", err
+		}
+		if err = InjectBypass(session, bypassScript); err != nil {
+			return nil, "", fmt.Errorf("inject bypass: %w", err)
+		}
+		if err = device.Resume(pid); err != nil {
+			return nil, "", fmt.Errorf("resume: %w", err)
+		}
+		return session, displayName, nil
+	}
+	session, displayName, _, err := OpenTargetApp(ctx, device, target)
+	if err != nil {
+		return nil, "", err
+	}
+	return session, displayName, nil
 }

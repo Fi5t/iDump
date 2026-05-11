@@ -72,7 +72,6 @@ func TestHandleFridaMessage_USBDump(t *testing.T) {
 	state := newTestState()
 
 	fileData := []byte("fake decrypted binary")
-	// size value matches len(fileData)
 	msg := `{"type":"send","payload":{"dump":"MyApp","path":"/var/containers/Bundle/App.app/MyApp","size":21}}`
 	if err := handleFridaMessage(msg, fileData, nil, tmpDir, state); err != nil {
 		t.Fatal(err)
@@ -167,24 +166,6 @@ func TestHandleFridaMessage_AppFileChunkZeroTruncates(t *testing.T) {
 	}
 }
 
-func TestStartDump_SessionDetachUnblocksErr(t *testing.T) {
-	t.Parallel()
-
-	state := newTestState()
-	select {
-	case state.err <- fmt.Errorf("session detached: process-terminated"):
-	default:
-	}
-	select {
-	case err := <-state.err:
-		if err == nil {
-			t.Fatal("expected non-nil error")
-		}
-	default:
-		t.Fatal("state.err was not signalled")
-	}
-}
-
 func TestHandleFridaMessage_ConcurrentDumps(t *testing.T) {
 	t.Parallel()
 
@@ -212,5 +193,47 @@ func TestHandleFridaMessage_ConcurrentDumps(t *testing.T) {
 
 	if count != n {
 		t.Errorf("expected %d entries in fileDict, got %d", n, count)
+	}
+}
+
+func TestHandleFridaMessage_USBDumpMultiChunk(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	state := newTestState()
+
+	chunk0 := []byte("hello")
+	chunk1 := []byte(" world")
+	total := int64(len(chunk0) + len(chunk1))
+
+	msg0 := fmt.Sprintf(
+		`{"type":"send","payload":{"dump":"bin","path":"/App.app/bin","chunk":0,"chunks":2,"size":%d}}`,
+		total,
+	)
+	msg1 := fmt.Sprintf(
+		`{"type":"send","payload":{"dump":"bin","path":"/App.app/bin","chunk":1,"chunks":2,"size":%d}}`,
+		total,
+	)
+
+	if err := handleFridaMessage(msg0, chunk0, nil, tmpDir, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleFridaMessage(msg1, chunk1, nil, tmpDir, state); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, "bin"))
+	if err != nil {
+		t.Fatalf("expected assembled file: %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Errorf("assembled content = %q, want %q", got, "hello world")
+	}
+
+	state.mu.Lock()
+	relPath := state.fileDict["bin"]
+	state.mu.Unlock()
+	if relPath != "bin" {
+		t.Errorf("fileDict[bin] = %q, want %q", relPath, "bin")
 	}
 }

@@ -1,5 +1,9 @@
-// compilets compiles agent/dump.ts into internal/dump.js via the
-// Frida compiler. Run from the project root: go run tools/compilets/main.go
+// compilets compiles a Frida TypeScript agent into a JS bundle via the
+// Frida compiler. Run from the project root:
+//
+//	go run tools/compilets/main.go [src] [out]
+//
+// Defaults: agent/dump.ts → internal/dump.js
 // (or: make generate-ts after make devkit)
 package main
 
@@ -18,8 +22,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	assetsDir := filepath.Join(cwd, "agent")
-	tsFile := filepath.Join(assetsDir, "dump.ts")
+	tsFile := filepath.Join(cwd, "agent", "dump.ts")
+	outFile := filepath.Join(cwd, "internal", "dump.js")
+
+	if len(os.Args) == 3 {
+		tsFile = filepath.Join(cwd, os.Args[1])
+		outFile = filepath.Join(cwd, os.Args[2])
+	} else if len(os.Args) != 1 {
+		fmt.Fprintf(os.Stderr, "usage: compilets [src.ts out.js]\n")
+		os.Exit(1)
+	}
 
 	compiler := frida.NewCompiler()
 	defer compiler.Clean()
@@ -29,7 +41,7 @@ func main() {
 	})
 
 	opts := frida.NewCompilerOptions()
-	opts.SetProjectRoot(assetsDir)
+	opts.SetProjectRoot(filepath.Dir(tsFile))
 
 	bundle, err := compiler.Build(tsFile, opts)
 	if err != nil {
@@ -37,12 +49,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	outDir := filepath.Join(cwd, "internal")
-	if err := os.MkdirAll(outDir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "mkdir: %v\n", err)
 		os.Exit(1)
 	}
-	outFile := filepath.Join(outDir, "dump.js")
 	if err := os.WriteFile(outFile, []byte(bundle), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "write: %v\n", err)
 		os.Exit(1)

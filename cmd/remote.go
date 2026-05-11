@@ -46,12 +46,14 @@ const (
 )
 
 var (
-	remoteOutput   string
-	remoteHost     string
-	remotePort     int
-	remoteUser     string
-	remotePassword string
-	remoteKey      string
+	remoteOutput    string
+	remoteHost      string
+	remotePort      int
+	remoteUser      string
+	remotePassword  string
+	remoteKey       string
+	remoteDodgeTier string
+	remoteEarly     string
 )
 
 var remoteCmd = &cobra.Command{
@@ -65,13 +67,28 @@ over SFTP and assembles the final IPA.
 Examples:
   idump remote com.example.App
   idump remote -H 192.168.1.10 -p 22 com.example.App
-  idump remote -K ~/.ssh/id_rsa com.example.App`,
+  idump remote -K ~/.ssh/id_rsa com.example.App
+  idump remote --dodge com.example.App
+  idump remote --dodge=advanced com.example.App
+  idump remote --early bypass.js com.example.App`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Compile or load the bypass script before touching the device so that
+		// errors surface immediately without waiting for a spawn operation.
+		bypassScript, err := resolveBypassScript(remoteDodgeTier, remoteEarly)
+		if err != nil {
+			return err
+		}
+
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 
 		target := args[0]
+
+		device, err := internal.GetUSBDevice(ctx)
+		if err != nil {
+			return err
+		}
 
 		sshClient, err := dialSSH(remoteHost, remotePort, remoteUser, remotePassword, remoteKey)
 		if err != nil {
@@ -85,11 +102,6 @@ Examples:
 		}
 		defer func() { _ = sftpClient.Close() }()
 
-		device, err := internal.GetUSBDevice(ctx)
-		if err != nil {
-			return err
-		}
-
 		baseDir, err := os.MkdirTemp("", "idump-payload-*")
 		if err != nil {
 			return fmt.Errorf("temp dir: %w", err)
@@ -100,7 +112,7 @@ Examples:
 			return fmt.Errorf("mkdir payload: %w", err)
 		}
 
-		session, displayName, _, err := internal.OpenTargetApp(ctx, device, target)
+		session, displayName, err := internal.OpenApp(ctx, device, target, bypassScript)
 		if err != nil {
 			return err
 		}
@@ -122,6 +134,7 @@ func init() {
 	remoteCmd.Flags().StringVarP(&remoteUser, "user", "u", defaultSSHUser, "SSH username")
 	remoteCmd.Flags().StringVarP(&remotePassword, "password", "P", defaultSSHPassword, "SSH password")
 	remoteCmd.Flags().StringVarP(&remoteKey, "key", "K", "", "SSH private key file path")
+	registerBypassFlags(remoteCmd, &remoteDodgeTier, &remoteEarly)
 	rootCmd.AddCommand(remoteCmd)
 }
 

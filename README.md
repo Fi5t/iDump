@@ -76,6 +76,31 @@ idump remote -K ~/.ssh/id_rsa com.example.App       # SSH key authentication
 idump remote -u mobile -P password com.example.App  # custom credentials
 ```
 
+### Bypass anti-Frida protection
+
+Some apps detect Frida and crash before the dump script can run. Use spawn-gating to inject a bypass before the app starts:
+
+```bash
+# Basic bypass (hooks libc symbols: ptrace, sysctl, connect, stat, getenv, ...)
+idump --dodge com.example.App
+
+# Advanced bypass for hardened apps that issue raw syscalls, walk environ[],
+# scan VM memory for Frida byte-signatures, and audit libc symbols for hooks.
+# Hooks libsystem_kernel.dylib thunks (__sysctl, __connect, __stat, task_info,
+# thread_info, vm_region_recurse_64) and the libc syscall multiplexer instead.
+idump --dodge=advanced com.example.App
+
+# Custom bypass script — provide your own hooks (.js or .ts)
+idump --early bypass.js com.example.App
+idump --early bypass.ts com.example.App   # compiled on the fly via frida.Compiler
+
+# Same flags work in SSH/SFTP mode
+idump remote --dodge com.example.App
+idump remote --dodge=advanced com.example.App
+```
+
+`--dodge` and `--early` are mutually exclusive.
+
 ### Flags
 
 **USB mode (`idump`):**
@@ -84,6 +109,9 @@ idump remote -u mobile -P password com.example.App  # custom credentials
 |------|-------|---------|-------------|
 | `--list` | `-l` | — | List installed apps |
 | `--output` | `-o` | app display name | Output IPA filename |
+| `--dodge` | — | — | Basic bypass: hooks libc symbols via spawn-gating |
+| `--dodge=advanced` | — | — | Advanced bypass for hardened apps (raw syscall hooks, environ scrub, VM scan) |
+| `--early` | — | — | Path to custom bypass script (`.js` or `.ts`); mutually exclusive with `--dodge` |
 
 **SSH/SFTP mode (`idump remote`):**
 
@@ -95,6 +123,9 @@ idump remote -u mobile -P password com.example.App  # custom credentials
 | `--user` | `-u` | `root` | SSH username |
 | `--password` | `-P` | `alpine` | SSH password |
 | `--key` | `-K` | — | SSH private key file |
+| `--dodge` | — | — | Basic bypass: hooks libc symbols via spawn-gating |
+| `--dodge=advanced` | — | — | Advanced bypass for hardened apps (raw syscall hooks, environ scrub, VM scan) |
+| `--early` | — | — | Path to custom bypass script (`.js` or `.ts`); mutually exclusive with `--dodge` |
 
 ---
 
@@ -142,12 +173,18 @@ make build   # produces ./idump
 make test    # go test ./...
 ```
 
-### Updating the Frida agent (`dump.ts`)
+### Updating the Frida agents
 
-The TypeScript agent in `agent/dump.ts` is pre-compiled to `internal/dump.js` and embedded directly into the binary. When you edit `dump.ts`, recompile and commit the result:
+The TypeScript agents are pre-compiled and embedded directly into the binary. When you edit `agent/dump.ts`, `agent/bypass.ts`, or `agent/bypass_advanced.ts`, recompile and commit:
 
 ```bash
-make generate-ts            # requires devkit (step 2)
-git add internal/dump.js
+make generate-ts                                                              # requires devkit (step 2)
+git add internal/dump.js internal/bypass.js internal/bypass_advanced.js
 git commit
+```
+
+To compile a single agent manually:
+
+```bash
+go run tools/compilets/main.go agent/bypass.ts internal/bypass.js
 ```

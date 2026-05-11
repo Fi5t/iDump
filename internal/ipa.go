@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 )
 
-// GenerateIPA moves decrypted binaries described by fileDict into the app bundle
-// under payloadPath, then zips the Payload/ directory to <ipaName>.ipa in outputDir.
 func GenerateIPA(payloadPath, outputDir, ipaName string, fileDict map[string]string) error {
 	ipaFilename := ipaName + ".ipa"
 
@@ -71,8 +69,15 @@ func zipDir(baseDir, subDir, destZip string) (err error) {
 		}
 
 		if d.IsDir() {
-			_, err = w.Create(rel + "/")
-			return err
+			hdr := &zip.FileHeader{
+				Name:   rel + "/",
+				Method: zip.Store,
+			}
+			hdr.SetMode(0o755 | fs.ModeDir)
+			if _, err = w.CreateHeader(hdr); err != nil {
+				return err
+			}
+			return nil
 		}
 
 		fw, err := w.Create(rel)

@@ -36,6 +36,8 @@ import (
 var (
 	listApps  bool
 	outputIPA string
+	dodgeTier string
+	earlyPath string
 )
 
 var rootCmd = &cobra.Command{
@@ -48,12 +50,22 @@ var rootCmd = &cobra.Command{
 File contents are transferred directly through Frida messages — no SSH required.
 
 Examples:
-  idump -l                          List installed apps
-  idump com.example.App             Dump by bundle ID
-  idump "My App"                    Dump by display name
-  idump -o output.ipa com.example.App  Dump with custom output name
-  idump remote --help               Dump via SSH/SFTP instead`,
+  idump -l                               List installed apps
+  idump com.example.App                  Dump by bundle ID
+  idump "My App"                         Dump by display name
+  idump -o output.ipa com.example.App    Dump with custom output name
+  idump --dodge com.example.App              Dump with basic anti-Frida bypass
+  idump --dodge=advanced com.example.App     Dump with advanced bypass (hardened apps)
+  idump --early bypass.js com.example.App  Dump with custom bypass script
+  idump remote --help                    Dump via SSH/SFTP instead`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Compile or load the bypass script before touching the device so that
+		// errors surface immediately without waiting for a spawn operation.
+		bypassScript, err := resolveBypassScript(dodgeTier, earlyPath)
+		if err != nil {
+			return err
+		}
+
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 
@@ -81,7 +93,7 @@ Examples:
 			return fmt.Errorf("mkdir payload: %w", err)
 		}
 
-		session, displayName, _, err := internal.OpenTargetApp(ctx, device, target)
+		session, displayName, err := internal.OpenApp(ctx, device, target, bypassScript)
 		if err != nil {
 			return err
 		}
@@ -106,4 +118,5 @@ func Execute() {
 func init() {
 	rootCmd.Flags().BoolVarP(&listApps, "list", "l", false, "List installed apps")
 	rootCmd.Flags().StringVarP(&outputIPA, "output", "o", "", "Output IPA filename (default: app display name)")
+	registerBypassFlags(rootCmd, &dodgeTier, &earlyPath)
 }

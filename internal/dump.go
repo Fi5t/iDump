@@ -30,8 +30,6 @@ type dumpState struct {
 	spinner   *spinner.Spinner
 }
 
-// StartDump injects the Frida agent into session, transfers decrypted binaries
-// to payloadPath, and assembles the final IPA named ipaName inside outputDir.
 // sftpClient is nil in USB mode; non-nil in SSH/SFTP mode.
 func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Client, payloadPath, outputDir, ipaName string) error {
 	script, err := session.CreateScript(DumpJS)
@@ -66,16 +64,28 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 		select {
 		case msgCh <- [2][]byte{[]byte(message), data}:
 		default:
+			select {
+			case state.err <- fmt.Errorf("message queue overflow: agent sent too many messages"):
+			default:
+			}
 		}
 	})
 
 	go func() {
-		for pair := range msgCh {
-			if err := handleFridaMessage(string(pair[0]), pair[1], sftpClient, payloadPath, state); err != nil {
-				select {
-				case state.err <- err:
-				default:
+		for {
+			select {
+			case pair, ok := <-msgCh:
+				if !ok {
+					return
 				}
+				if err := handleFridaMessage(string(pair[0]), pair[1], sftpClient, payloadPath, state); err != nil {
+					select {
+					case state.err <- err:
+					default:
+					}
+					return
+				}
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -128,8 +138,7 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 	return session.Detach()
 }
 
-// appendChunk writes data to path, creating (and truncating) on chunk 0,
-// appending on subsequent chunks. Chunks must arrive in order.
+// Chunks must arrive in order.
 func appendChunk(path string, data []byte, chunk int) (err error) {
 	flag := os.O_WRONLY | os.O_CREATE
 	if chunk == 0 {
@@ -176,7 +185,7 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		case state.err <- jsErr:
 		default:
 		}
-		return nil
+		return nil // error forwarded to state.err; return nil so the goroutine keeps running
 	}
 	if msg.Type != "send" || msg.Payload == nil {
 		return nil
@@ -184,7 +193,6 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 
 	payload := msg.Payload
 
-	// Individual decrypted binary (.fid file).
 	if dumpVal, ok := payload["dump"]; ok {
 		originPath, _ := payload["path"].(string)
 
@@ -220,7 +228,9 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 			if err := sftpDownloadFile(sftpClient, remotePath, localPath, state.spinner); err != nil {
 				return fmt.Errorf("download %s: %w", remotePath, err)
 			}
-			_ = os.Chmod(localPath, 0o655)
+			if err := os.Chmod(localPath, 0o655); err != nil {
+				ui.Warn(fmt.Sprintf("chmod %s: %v", localPath, err))
+			}
 			state.mu.Lock()
 			state.fileDict[filepath.Base(remotePath)] = relPath
 			state.mu.Unlock()
@@ -306,17 +316,21 @@ func sftpDownloadFile(client *sftp.Client, remotePath, localPath string, spin *s
 }
 
 type countingReader struct {
-	r     io.Reader
-	n     int64
-	total int64
-	spin  *spinner.Spinner
-	name  string
+	r         io.Reader
+	n         int64
+	lastPrint int64
+	total     int64
+	spin      *spinner.Spinner
+	name      string
 }
 
 func (cr *countingReader) Read(p []byte) (n int, err error) {
 	n, err = cr.r.Read(p)
 	cr.n += int64(n)
-	cr.spin.Suffix = fmt.Sprintf(" [%s / %s] %s", fmtSize(cr.n), fmtSize(cr.total), cr.name)
+	if cr.n-cr.lastPrint >= 64*1024 || err == io.EOF {
+		cr.spin.Suffix = fmt.Sprintf(" [%s / %s] %s", fmtSize(cr.n), fmtSize(cr.total), cr.name)
+		cr.lastPrint = cr.n
+	}
 	return
 }
 
@@ -324,7 +338,6 @@ func sftpDownloadDir(client *sftp.Client, remotePath, localBase string, spin *sp
 	return sftpDownloadDirVisited(client, remotePath, localBase, spin, make(map[string]bool))
 }
 
-// sftpDownloadDirVisited walks remotePath and downloads its tree to localBase.
 // visited tracks resolved symlink targets to break cycles.
 func sftpDownloadDirVisited(client *sftp.Client, remotePath, localBase string, spin *spinner.Spinner, visited map[string]bool) error {
 	walker := client.Walk(remotePath)
@@ -371,8 +384,6 @@ func sftpDownloadDirVisited(client *sftp.Client, remotePath, localBase string, s
 	return errors.Join(errs...)
 }
 
-// sftpHandleSymlink resolves a symlink at remotePath and either downloads the
-// target file or materialises the target directory into localDst.
 func sftpHandleSymlink(client *sftp.Client, remotePath, localDst string, spin *spinner.Spinner, visited map[string]bool) error {
 	target, err := client.ReadLink(remotePath)
 	if err != nil {

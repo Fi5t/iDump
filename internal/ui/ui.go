@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"os"
+
+	"golang.org/x/term"
 )
 
 const (
@@ -13,18 +15,30 @@ const (
 	red    = "\033[31m"
 )
 
+var (
+	stdoutColor = term.IsTerminal(int(os.Stdout.Fd()))
+	stderrColor = term.IsTerminal(int(os.Stderr.Fd()))
+)
+
+func colorize(enabled bool, code, s string) string {
+	if !enabled {
+		return s
+	}
+	return code + s + reset
+}
+
 func Step(msg string) {
-	fmt.Printf("  %s→%s  %s\n", dim, reset, msg)
+	fmt.Printf("  %s  %s\n", colorize(stdoutColor, dim, "→"), msg)
 }
 
 func OK(msg string) {
-	fmt.Printf("  %s✓%s  %s\n", green, reset, msg)
+	fmt.Printf("  %s  %s\n", colorize(stdoutColor, green, "✓"), msg)
 }
 
 func Warn(msg string) {
-	fmt.Fprintf(os.Stderr, "  %s⚠%s  %s\n", yellow, reset, msg)
+	fmt.Fprintf(os.Stderr, "  %s  %s\n", colorize(stderrColor, yellow, "⚠"), msg)
 }
 
 func Err(msg string) {
-	fmt.Fprintf(os.Stderr, "  %s✗%s  %s\n", red, reset, msg)
+	fmt.Fprintf(os.Stderr, "  %s  %s\n", colorize(stderrColor, red, "✗"), msg)
 }

@@ -20,6 +20,36 @@ jobs:
           echo "Latest Frida release: ${version}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
+  lint:
+    needs: resolve-frida
+    runs-on: ubuntu-latest
+
+    env:
+      FRIDA_VERSION: ${{ needs.resolve-frida.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download Frida devkit
+        env:
+          DEVKIT_OS: linux
+          DEVKIT_ARCH: x86_64
+        run: bash scripts/get-devkit.sh "$FRIDA_VERSION"
+
+      - name: Set CGO flags
+        run: |
+          echo "CGO_CFLAGS=-I${{ github.workspace }}/build/frida-devkit" >> "$GITHUB_ENV"
+          echo "CGO_LDFLAGS=-L${{ github.workspace }}/build/frida-devkit" >> "$GITHUB_ENV"
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
   ci:
     needs: resolve-frida
     strategy:

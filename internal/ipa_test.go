@@ -90,7 +90,6 @@ func TestGenerateIPA_PayloadPreservedAfterSuccess(t *testing.T) {
 		t.Fatalf("GenerateIPA: %v", err)
 	}
 
-	// Cleanup is now the caller's responsibility; GenerateIPA no longer removes payloadPath.
 	if _, err := os.Stat(payloadPath); os.IsNotExist(err) {
 		t.Errorf("payloadPath should NOT be removed by GenerateIPA — cleanup is caller's responsibility")
 	}

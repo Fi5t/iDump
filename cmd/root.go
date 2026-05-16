@@ -23,12 +23,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/signal"
+
 	"github.com/Fi5t/idump/internal"
 	"github.com/Fi5t/idump/internal/ui"
 	"github.com/spf13/cobra"
-	"os"
-	"os/signal"
 )
 
 var (
@@ -71,7 +73,7 @@ Examples:
 		}
 
 		if outputIPA != "" && (len(args) > 1 || dumpAll) {
-			return fmt.Errorf("--output cannot be used with multiple targets or --dump-all")
+			return errors.New("--output cannot be used with multiple targets or --dump-all")
 		}
 
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -87,7 +89,7 @@ Examples:
 		}
 
 		if !dumpAll && len(args) == 0 {
-			return fmt.Errorf("target app required (name or bundle ID); use -l to list or --dump-all")
+			return errors.New("target app required (name or bundle ID); use -l to list or --dump-all")
 		}
 
 		targets, err := resolveTargets(device, args, dumpAll, skipSystem, filter)
@@ -95,7 +97,7 @@ Examples:
 			return err
 		}
 		if len(targets) == 0 {
-			return fmt.Errorf("no apps matched the given criteria")
+			return errors.New("no apps matched the given criteria")
 		}
 
 		ipaOverride, effectiveOutputDir := resolveOutputArgs(outputIPA, outputDir)

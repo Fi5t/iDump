@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Fi5t/idump/internal"
@@ -23,9 +24,7 @@ type DumpResult struct {
 	Err         error
 }
 
-// dumpOne runs the full dump lifecycle for a single app.
 // ipaOverride renames the output IPA; pass "" to use the app display name.
-// sftpClient is nil for USB mode.
 func dumpOne(
 	ctx context.Context,
 	device frida.DeviceInt,
@@ -42,11 +41,11 @@ func dumpOne(
 	defer func() { _ = os.RemoveAll(baseDir) }()
 
 	payloadPath := filepath.Join(baseDir, "Payload")
-	if err := os.MkdirAll(payloadPath, 0o755); err != nil {
+	if err := os.MkdirAll(payloadPath, 0o750); err != nil {
 		return DumpResult{Target: target, Err: fmt.Errorf("mkdir payload: %w", err)}
 	}
 
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
 		return DumpResult{Target: target, Err: fmt.Errorf("output dir: %w", err)}
 	}
 	if abs, err := filepath.Abs(outputDir); err == nil {
@@ -74,7 +73,6 @@ func dumpOne(
 	}
 }
 
-// resolveTargets builds the list of bundle IDs to dump.
 // When dumpAll is false it returns args unchanged.
 func resolveTargets(
 	device frida.DeviceInt,
@@ -127,7 +125,7 @@ func printSummary(results []DumpResult) {
 			}
 		}
 	}
-	idxW := len(fmt.Sprintf("%d", len(results)))
+	idxW := len(strconv.Itoa(len(results)))
 	statusW := len("✗ failed")
 
 	fmt.Println()
@@ -186,7 +184,7 @@ func resolveOutputArgs(outputFlag, defaultDir string) (ipaOverride, effectiveDir
 	return
 }
 
-func registerBatchFlags(cmd *cobra.Command, dumpAll *bool, skipSystem *bool, filter *string, outputDir *string) {
+func registerBatchFlags(cmd *cobra.Command, dumpAll, skipSystem *bool, filter, outputDir *string) {
 	cmd.Flags().BoolVarP(dumpAll, "dump-all", "a", false, "Dump all installed apps")
 	cmd.Flags().BoolVar(skipSystem, "skip-system", false, "Skip com.apple.* apps (use with --dump-all)")
 	cmd.Flags().StringVar(filter, "filter", "", "Include only apps whose bundle ID contains this string (use with --dump-all)")

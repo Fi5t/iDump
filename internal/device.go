@@ -36,7 +36,7 @@ func GetUSBDevice(ctx context.Context) (frida.DeviceInt, error) {
 		ui.Step("Waiting for USB device...")
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("waiting for USB device: %w", ctx.Err())
 		case <-changed:
 		}
 	}
@@ -93,11 +93,11 @@ func appPIDStr(a *frida.Application) string {
 	if a.PID() == 0 {
 		return "-"
 	}
-	return strconv.Itoa(int(a.PID()))
+	return strconv.Itoa(a.PID())
 }
 
 // Does NOT resume the process; call device.Resume(pid) after injecting any bypass script.
-func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID string) (*frida.Session, int, string, string, error) {
+func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID string) (session *frida.Session, pid int, displayName, bundleID string, err error) {
 	ui.Step("Attaching to " + nameOrBundleID)
 
 	apps, err := GetApplications(device)
@@ -105,8 +105,6 @@ func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID 
 		return nil, 0, "", "", err
 	}
 
-	var pid int
-	var displayName, bundleID string
 	for _, a := range apps {
 		if nameOrBundleID == a.Identifier() || nameOrBundleID == a.Name() {
 			pid = a.PID()
@@ -122,12 +120,14 @@ func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID 
 
 	if pid != 0 {
 		ui.Step("Restarting for a clean session")
-		_ = device.Kill(pid)
+		if kerr := device.Kill(pid); kerr != nil {
+			ui.Warn(fmt.Sprintf("kill pid %d: %v", pid, kerr))
+		}
 		timer := time.NewTimer(time.Second)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			return nil, 0, "", "", ctx.Err()
+			return nil, 0, "", "", fmt.Errorf("waiting for restart: %w", ctx.Err())
 		case <-timer.C:
 		}
 	}
@@ -136,21 +136,24 @@ func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID 
 	if err != nil {
 		return nil, 0, "", "", fmt.Errorf("failed to spawn %s: %w", bundleID, err)
 	}
-	session, err := device.Attach(spawnedPID, nil)
+	session, err = device.Attach(spawnedPID, nil)
 	if err != nil {
-		_ = device.Kill(spawnedPID)
+		if kerr := device.Kill(spawnedPID); kerr != nil {
+			ui.Warn(fmt.Sprintf("kill pid %d: %v", spawnedPID, kerr))
+		}
 		return nil, 0, "", "", fmt.Errorf("failed to attach to pid %d: %w", spawnedPID, err)
 	}
 
 	return session, spawnedPID, displayName, bundleID, nil
 }
 
-func OpenTargetApp(ctx context.Context, device frida.DeviceInt, nameOrBundleID string) (*frida.Session, string, string, error) {
-	session, pid, displayName, bundleID, err := SpawnAndAttach(ctx, device, nameOrBundleID)
+func OpenTargetApp(ctx context.Context, device frida.DeviceInt, nameOrBundleID string) (session *frida.Session, displayName, bundleID string, err error) {
+	var pid int
+	session, pid, displayName, bundleID, err = SpawnAndAttach(ctx, device, nameOrBundleID)
 	if err != nil {
 		return nil, "", "", err
 	}
-	if err := device.Resume(pid); err != nil {
+	if err = device.Resume(pid); err != nil {
 		return nil, "", "", fmt.Errorf("failed to resume pid %d: %w", pid, err)
 	}
 	return session, displayName, bundleID, nil
@@ -163,9 +166,21 @@ func OpenApp(ctx context.Context, device frida.DeviceInt, target, bypassScript s
 			return nil, "", err
 		}
 		if err = InjectBypass(session, bypassScript); err != nil {
+			if derr := session.Detach(); derr != nil {
+				ui.Warn(fmt.Sprintf("detach after inject failure: %v", derr))
+			}
+			if kerr := device.Kill(pid); kerr != nil {
+				ui.Warn(fmt.Sprintf("kill pid %d after inject failure: %v", pid, kerr))
+			}
 			return nil, "", fmt.Errorf("inject bypass: %w", err)
 		}
 		if err = device.Resume(pid); err != nil {
+			if derr := session.Detach(); derr != nil {
+				ui.Warn(fmt.Sprintf("detach after resume failure: %v", derr))
+			}
+			if kerr := device.Kill(pid); kerr != nil {
+				ui.Warn(fmt.Sprintf("kill pid %d after resume failure: %v", pid, kerr))
+			}
 			return nil, "", fmt.Errorf("resume: %w", err)
 		}
 		return session, displayName, nil

@@ -22,6 +22,7 @@ THE SOFTWARE.
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/Fi5t/idump/internal"
@@ -38,7 +39,7 @@ func resolveBypassScript(tier, earlyPath string) (string, error) {
 		return "", fmt.Errorf("--dodge: unknown tier %q (use %q or %q)", tier, bypassTierBasic, bypassTierAdvanced)
 	}
 	if tier != "" && earlyPath != "" {
-		return "", fmt.Errorf("--dodge and --early are mutually exclusive")
+		return "", errors.New("--dodge and --early are mutually exclusive")
 	}
 	switch tier {
 	case bypassTierAdvanced:
@@ -56,7 +57,7 @@ func resolveBypassScript(tier, earlyPath string) (string, error) {
 	return "", nil
 }
 
-func registerBypassFlags(cmd *cobra.Command, tier *string, early *string) {
+func registerBypassFlags(cmd *cobra.Command, tier, early *string) {
 	cmd.Flags().StringVar(tier, "dodge", "", `Bypass tier: "basic" (libc hooks) or "advanced" (advanced kernel bypass); bare --dodge uses "basic"`)
 	cmd.Flag("dodge").NoOptDefVal = bypassTierBasic
 	cmd.Flags().StringVar(early, "early", "", "Path to custom bypass script (.js or .ts); mutually exclusive with --dodge")

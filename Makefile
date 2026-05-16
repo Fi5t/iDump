@@ -8,7 +8,7 @@ CGO_LDFLAGS := -L$(FRIDA_DEVKIT)
 export CGO_CFLAGS
 export CGO_LDFLAGS
 
-.PHONY: all build test clean devkit generate-ts
+.PHONY: all build test lint clean devkit generate-ts
 
 all: build
 
@@ -25,6 +25,9 @@ build: $(FRIDA_DEVKIT)/frida-core.h
 
 test: $(FRIDA_DEVKIT)/frida-core.h
 	go test ./...
+
+lint: $(FRIDA_DEVKIT)/frida-core.h
+	golangci-lint run
 
 clean:
 	rm -f $(BINARY)

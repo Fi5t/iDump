@@ -8,6 +8,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,10 +17,16 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "getwd: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("getwd: %w", err)
 	}
 
 	tsFile := filepath.Join(cwd, "agent", "dump.ts")
@@ -29,8 +36,7 @@ func main() {
 		tsFile = filepath.Join(cwd, os.Args[1])
 		outFile = filepath.Join(cwd, os.Args[2])
 	} else if len(os.Args) != 1 {
-		fmt.Fprintf(os.Stderr, "usage: compilets [src.ts out.js]\n")
-		os.Exit(1)
+		return errors.New("usage: compilets [src.ts out.js]")
 	}
 
 	compiler := frida.NewCompiler()
@@ -45,17 +51,15 @@ func main() {
 
 	bundle, err := compiler.Build(tsFile, opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "compile error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("compile error: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "mkdir: %v\n", err)
-		os.Exit(1)
+	if err := os.MkdirAll(filepath.Dir(outFile), 0o750); err != nil { //nolint:gosec // path is a developer-supplied build output path
+		return fmt.Errorf("mkdir: %w", err)
 	}
-	if err := os.WriteFile(outFile, []byte(bundle), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "write: %v\n", err)
-		os.Exit(1)
+	if err := os.WriteFile(outFile, []byte(bundle), 0o600); err != nil { //nolint:gosec // path is a developer-supplied build output path
+		return fmt.Errorf("write: %w", err)
 	}
 	fmt.Println("wrote", outFile)
+	return nil
 }

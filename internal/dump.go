@@ -30,8 +30,12 @@ type dumpState struct {
 	spinner   *spinner.Spinner
 }
 
-// sftpClient is nil in USB mode; non-nil in SSH/SFTP mode.
-func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Client, payloadPath, outputDir, ipaName string) error {
+func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Client, payloadPath, outputDir, ipaName string) (err error) {
+	defer func() {
+		if derr := session.Detach(); err == nil && derr != nil {
+			err = fmt.Errorf("detach session: %w", derr)
+		}
+	}()
 	script, err := session.CreateScript(DumpJS)
 	if err != nil {
 		return fmt.Errorf("create script: %w", err)
@@ -65,7 +69,7 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 		case msgCh <- [2][]byte{[]byte(message), data}:
 		default:
 			select {
-			case state.err <- fmt.Errorf("message queue overflow: agent sent too many messages"):
+			case state.err <- errors.New("message queue overflow: agent sent too many messages"):
 			default:
 			}
 		}
@@ -114,7 +118,7 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 	select {
 	case <-ctx.Done():
 		spin.Stop()
-		return ctx.Err()
+		return fmt.Errorf("dump interrupted: %w", ctx.Err())
 	case <-state.done:
 	case jsErr := <-state.err:
 		spin.Stop()
@@ -131,11 +135,10 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 
 	spin.Stop()
 	ipaPath := filepath.Join(outputDir, ipaName+".ipa")
-	if info, err := os.Stat(ipaPath); err == nil {
+	if info, statErr := os.Stat(ipaPath); statErr == nil {
 		ui.OK(fmt.Sprintf("Saved %s (%s)", ipaPath, ui.FmtSize(info.Size())))
 	}
-
-	return session.Detach()
+	return nil
 }
 
 // Chunks must arrive in order.
@@ -146,17 +149,19 @@ func appendChunk(path string, data []byte, chunk int) (err error) {
 	} else {
 		flag |= os.O_APPEND
 	}
-	f, err := os.OpenFile(path, flag, 0o644)
+	f, err := os.OpenFile(path, flag, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("open %s: %w", path, err)
 	}
 	defer func() {
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
 	}()
-	_, err = f.Write(data)
-	return err
+	if _, werr := f.Write(data); werr != nil {
+		return fmt.Errorf("write %s: %w", path, werr)
+	}
+	return nil
 }
 
 func intPayload(payload map[string]interface{}, key string, def int) int {
@@ -164,6 +169,13 @@ func intPayload(payload map[string]interface{}, key string, def int) int {
 		return int(v)
 	}
 	return def
+}
+
+func strVal(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, payloadPath string, state *dumpState) error {
@@ -174,7 +186,7 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		Stack       string                 `json:"stack"`
 	}
 	if err := json.Unmarshal([]byte(message), &msg); err != nil {
-		return nil
+		return nil //nolint:nilerr // malformed Frida messages are silently skipped
 	}
 	if msg.Type == "error" {
 		if msg.Stack != "" {
@@ -194,7 +206,7 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 	payload := msg.Payload
 
 	if dumpVal, ok := payload["dump"]; ok {
-		originPath, _ := payload["path"].(string)
+		originPath := strVal(payload["path"])
 
 		relPath := originPath
 		if _, after, found := strings.Cut(originPath, ".app/"); found {
@@ -202,7 +214,7 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		}
 
 		if sftpClient == nil {
-			basename, _ := dumpVal.(string)
+			basename := strVal(dumpVal)
 			chunk := intPayload(payload, "chunk", 0)
 			numChunks := intPayload(payload, "chunks", 1)
 			totalSize := int64(intPayload(payload, "size", 0))
@@ -221,12 +233,12 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 				state.mu.Unlock()
 			}
 		} else {
-			remotePath, _ := dumpVal.(string)
+			remotePath := strVal(dumpVal)
 			localPath := filepath.Join(payloadPath, filepath.Base(remotePath))
 			if err := sftpDownloadFile(sftpClient, remotePath, localPath, state.spinner); err != nil {
 				return fmt.Errorf("download %s: %w", remotePath, err)
 			}
-			if err := os.Chmod(localPath, 0o655); err != nil {
+			if err := os.Chmod(localPath, 0o644); err != nil { //nolint:gosec // payload file permissions
 				ui.Warn(fmt.Sprintf("chmod %s: %v", localPath, err))
 			}
 			state.mu.Lock()
@@ -236,14 +248,14 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 	}
 
 	if appFileVal, ok := payload["app_file"]; ok {
-		relPath, _ := appFileVal.(string)
-		appBaseName, _ := payload["app"].(string)
+		relPath := strVal(appFileVal)
+		appBaseName := strVal(payload["app"])
 		chunk := intPayload(payload, "chunk", 0)
 		numChunks := intPayload(payload, "chunks", 1)
 
 		localPath := filepath.Join(payloadPath, appBaseName, relPath)
 		if chunk == 0 {
-			if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(localPath), 0o750); err != nil {
 				return fmt.Errorf("mkdir for app_file %s: %w", relPath, err)
 			}
 		}
@@ -267,11 +279,11 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 	}
 
 	if appVal, ok := payload["app"]; ok && sftpClient != nil {
-		remotePath, _ := appVal.(string)
+		remotePath := strVal(appVal)
 		if err := sftpDownloadDir(sftpClient, remotePath, payloadPath, state.spinner); err != nil {
 			return fmt.Errorf("download app dir %s: %w", remotePath, err)
 		}
-		chmodR(filepath.Join(payloadPath, filepath.Base(remotePath)), 0o755)
+		chmodR(filepath.Join(payloadPath, filepath.Base(remotePath)), 0o750)
 		state.mu.Lock()
 		state.fileDict["app"] = filepath.Base(remotePath)
 		state.mu.Unlock()
@@ -287,13 +299,13 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 func sftpDownloadFile(client *sftp.Client, remotePath, localPath string, spin *spinner.Spinner) (err error) {
 	rf, err := client.Open(remotePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("sftp open %s: %w", remotePath, err)
 	}
 	defer func() { _ = rf.Close() }()
 
 	lf, err := os.Create(localPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("create %s: %w", localPath, err)
 	}
 	defer func() {
 		if cerr := lf.Close(); err == nil {
@@ -307,7 +319,9 @@ func sftpDownloadFile(client *sftp.Client, remotePath, localPath string, spin *s
 		totalSize = stat.Size()
 	}
 	spin.Suffix = fmt.Sprintf(" [0 B / %s] %s", ui.FmtSize(totalSize), name)
-	_, err = io.Copy(lf, &countingReader{r: rf, spin: spin, name: name, total: totalSize})
+	if _, cerr := io.Copy(lf, &countingReader{r: rf, spin: spin, name: name, total: totalSize}); cerr != nil {
+		err = fmt.Errorf("copy %s: %w", remotePath, cerr)
+	}
 	return err
 }
 
@@ -364,14 +378,14 @@ func sftpDownloadDirVisited(client *sftp.Client, remotePath, localBase string, s
 		}
 
 		if stat.IsDir() {
-			if err := os.MkdirAll(localDst, 0o755); err != nil {
-				return err
+			if err := os.MkdirAll(localDst, 0o750); err != nil {
+				return fmt.Errorf("mkdir %s: %w", localDst, err)
 			}
 			continue
 		}
 
-		if err := os.MkdirAll(filepath.Dir(localDst), 0o755); err != nil {
-			return err
+		if err := os.MkdirAll(filepath.Dir(localDst), 0o750); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(localDst), err)
 		}
 		if err := sftpDownloadFile(client, walkerPath, localDst, spin); err != nil {
 			errs = append(errs, fmt.Errorf("download %s: %w", walkerPath, err))
@@ -399,13 +413,13 @@ func sftpHandleSymlink(client *sftp.Client, remotePath, localDst string, spin *s
 
 	if targetInfo.IsDir() {
 		visited[target] = true
-		if err := os.MkdirAll(localDst, 0o755); err != nil {
-			return err
+		if err := os.MkdirAll(localDst, 0o750); err != nil {
+			return fmt.Errorf("mkdir %s: %w", localDst, err)
 		}
 		return sftpDownloadDirContents(client, target, localDst, spin, visited)
 	}
-	if err := os.MkdirAll(filepath.Dir(localDst), 0o755); err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(localDst), 0o750); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(localDst), err)
 	}
 	if err := sftpDownloadFile(client, target, localDst, spin); err != nil {
 		return fmt.Errorf("download symlink target %s: %w", target, err)
@@ -434,8 +448,8 @@ func sftpDownloadDirContents(client *sftp.Client, remoteSrc, localDst string, sp
 			continue
 		}
 		if entry.IsDir() {
-			if err := os.MkdirAll(entryLocal, 0o755); err != nil {
-				return err
+			if err := os.MkdirAll(entryLocal, 0o750); err != nil {
+				return fmt.Errorf("mkdir %s: %w", entryLocal, err)
 			}
 			if err := sftpDownloadDirContents(client, entryRemote, entryLocal, spin, visited); err != nil {
 				errs = append(errs, err)
@@ -450,12 +464,14 @@ func sftpDownloadDirContents(client *sftp.Client, remoteSrc, localDst string, sp
 }
 
 func chmodR(path string, mode os.FileMode) {
-	_ = filepath.WalkDir(path, func(p string, _ fs.DirEntry, err error) error {
-		if err == nil {
-			if cerr := os.Chmod(p, mode); cerr != nil {
+	if err := filepath.WalkDir(path, func(p string, _ fs.DirEntry, walkErr error) error {
+		if walkErr == nil {
+			if cerr := os.Chmod(p, mode); cerr != nil { //nolint:gosec // controlled local temp directory
 				ui.Warn(fmt.Sprintf("chmod %s: %v", p, cerr))
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		ui.Warn(fmt.Sprintf("chmodR %s: %v", path, err))
+	}
 }

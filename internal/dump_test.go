@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,7 +82,7 @@ func TestHandleFridaMessage_USBDump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected file to be written: %v", err)
 	}
-	if string(written) != string(fileData) {
+	if !bytes.Equal(written, fileData) {
 		t.Errorf("file content = %q, want %q", written, fileData)
 	}
 
@@ -110,7 +111,7 @@ func TestHandleFridaMessage_AppFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected file to be written: %v", err)
 	}
-	if string(written) != string(fileData) {
+	if !bytes.Equal(written, fileData) {
 		t.Errorf("file content = %q, want %q", written, fileData)
 	}
 

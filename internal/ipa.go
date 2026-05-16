@@ -2,6 +2,7 @@ package internal
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -14,7 +15,7 @@ func GenerateIPA(payloadPath, outputDir, ipaName string, fileDict map[string]str
 
 	appName, ok := fileDict["app"]
 	if !ok {
-		return fmt.Errorf("app bundle name not found in file dict")
+		return errors.New("app bundle name not found in file dict")
 	}
 
 	for key, relPath := range fileDict {
@@ -24,7 +25,7 @@ func GenerateIPA(payloadPath, outputDir, ipaName string, fileDict map[string]str
 		src := filepath.Join(payloadPath, key)
 		dst := filepath.Join(payloadPath, appName, relPath)
 
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 			return fmt.Errorf("mkdir for %s: %w", dst, err)
 		}
 		if err := os.Rename(src, dst); err != nil {
@@ -43,7 +44,7 @@ func GenerateIPA(payloadPath, outputDir, ipaName string, fileDict map[string]str
 func zipDir(baseDir, subDir, destZip string) (err error) {
 	f, err := os.Create(destZip)
 	if err != nil {
-		return err
+		return fmt.Errorf("create zip %s: %w", destZip, err)
 	}
 	defer func() {
 		if cerr := f.Close(); err == nil {
@@ -59,13 +60,13 @@ func zipDir(baseDir, subDir, destZip string) (err error) {
 	}()
 
 	root := filepath.Join(baseDir, subDir)
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	if werr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		rel, err := filepath.Rel(baseDir, path)
-		if err != nil {
-			return err
+		rel, relErr := filepath.Rel(baseDir, path)
+		if relErr != nil {
+			return fmt.Errorf("rel path for %s: %w", path, relErr)
 		}
 
 		if d.IsDir() {
@@ -74,22 +75,28 @@ func zipDir(baseDir, subDir, destZip string) (err error) {
 				Method: zip.Store,
 			}
 			hdr.SetMode(0o755 | fs.ModeDir)
-			if _, err = w.CreateHeader(hdr); err != nil {
-				return err
+			if _, hErr := w.CreateHeader(hdr); hErr != nil {
+				return fmt.Errorf("zip header for %s: %w", rel, hErr)
 			}
 			return nil
 		}
 
-		fw, err := w.Create(rel)
-		if err != nil {
-			return err
+		fw, fwErr := w.Create(rel)
+		if fwErr != nil {
+			return fmt.Errorf("zip entry for %s: %w", rel, fwErr)
 		}
-		src, err := os.Open(path)
-		if err != nil {
-			return err
+		src, srcErr := os.Open(path) //nolint:gosec // walking a controlled local temp directory
+		if srcErr != nil {
+			return fmt.Errorf("open %s: %w", path, srcErr)
 		}
-		_, err = io.Copy(fw, src)
+		_, cpErr := io.Copy(fw, src)
 		_ = src.Close()
-		return err
-	})
+		if cpErr != nil {
+			return fmt.Errorf("copy %s: %w", path, cpErr)
+		}
+		return nil
+	}); werr != nil {
+		return fmt.Errorf("walk %s: %w", root, werr)
+	}
+	return nil
 }

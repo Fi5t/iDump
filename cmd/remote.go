@@ -23,6 +23,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -83,7 +84,7 @@ Examples:
 		}
 
 		if remoteOutput != "" && (len(args) > 1 || remoteDumpAll) {
-			return fmt.Errorf("--output cannot be used with multiple targets or --dump-all")
+			return errors.New("--output cannot be used with multiple targets or --dump-all")
 		}
 
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -95,7 +96,7 @@ Examples:
 		}
 
 		if !remoteDumpAll && len(args) == 0 {
-			return fmt.Errorf("target app required (name or bundle ID); use --dump-all to dump all apps")
+			return errors.New("target app required (name or bundle ID); use --dump-all to dump all apps")
 		}
 
 		sshClient, err := dialSSH(remoteHost, remotePort, remoteUser, remotePassword, remoteKey)
@@ -115,7 +116,7 @@ Examples:
 			return err
 		}
 		if len(targets) == 0 {
-			return fmt.Errorf("no apps matched the given criteria")
+			return errors.New("no apps matched the given criteria")
 		}
 
 		ipaOverride, effectiveOutputDir := resolveOutputArgs(remoteOutput, remoteOutputDir)
@@ -175,7 +176,7 @@ func dialSSH(host string, port int, user, password, keyFile string) (*ssh.Client
 	cfg := &ssh.ClientConfig{
 		User:            user,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // connecting to a known trusted iOS device
 	}
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))

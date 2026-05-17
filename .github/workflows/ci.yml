@@ -6,6 +6,8 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+permissions: {}
+
 jobs:
   resolve-frida:
     runs-on: ubuntu-latest
@@ -23,14 +25,18 @@ jobs:
   lint:
     needs: resolve-frida
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     env:
       FRIDA_VERSION: ${{ needs.resolve-frida.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
           go-version-file: go.mod
 
@@ -46,7 +52,7 @@ jobs:
           echo "CGO_LDFLAGS=-L${{ github.workspace }}/build/frida-devkit" >> "$GITHUB_ENV"
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84  # v6
         with:
           version: latest
 
@@ -64,14 +70,18 @@ jobs:
             devkit_arch: x86_64
 
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
 
     env:
       FRIDA_VERSION: ${{ needs.resolve-frida.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
           go-version-file: go.mod
 

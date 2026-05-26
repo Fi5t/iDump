@@ -44,11 +44,17 @@ var (
 	outputDir  string
 )
 
+type alreadyDisplayed struct{ cause error }
+
+func (e alreadyDisplayed) Error() string { return e.cause.Error() }
+func (e alreadyDisplayed) Unwrap() error { return e.cause }
+
 var rootCmd = &cobra.Command{
-	SilenceUsage: true,
-	Use:          "idump [flags] [target ...]",
-	Short:        "Decrypt and dump iOS app binaries to an IPA file via USB",
-	Args:         cobra.ArbitraryArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Use:           "idump [flags] [target ...]",
+	Short:         "Decrypt and dump iOS app binaries to an IPA file via USB",
+	Args:          cobra.ArbitraryArgs,
 	Long: `idump decrypts and dumps iOS app binaries from a USB-connected device using Frida.
 
 File contents are transferred directly through Frida messages — no SSH required.
@@ -117,7 +123,7 @@ Examples:
 
 		for _, r := range results {
 			if r.Err != nil {
-				return r.Err
+				return alreadyDisplayed{r.Err}
 			}
 		}
 		return nil
@@ -127,6 +133,10 @@ Examples:
 func Execute() {
 	err := rootCmd.Execute()
 	if err != nil {
+		var ad alreadyDisplayed
+		if !errors.As(err, &ad) {
+			ui.Err(err.Error())
+		}
 		os.Exit(1)
 	}
 }

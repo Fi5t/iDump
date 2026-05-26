@@ -60,8 +60,9 @@ var (
 )
 
 var remoteCmd = &cobra.Command{
-	Use:   "remote [flags] [target ...]",
-	Short: "Decrypt and dump iOS app binaries to an IPA file via SSH/SFTP",
+	SilenceErrors: true,
+	Use:           "remote [flags] [target ...]",
+	Short:         "Decrypt and dump iOS app binaries to an IPA file via SSH/SFTP",
 	Long: `remote connects to the device over SSH and downloads decrypted binaries via SFTP.
 
 The Frida agent writes .fid files to the device; the host then retrieves them
@@ -136,7 +137,7 @@ Examples:
 
 		for _, r := range results {
 			if r.Err != nil {
-				return r.Err
+				return alreadyDisplayed{r.Err}
 			}
 		}
 		return nil

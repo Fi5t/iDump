@@ -175,6 +175,34 @@ idump remote --dodge=advanced com.example.App
 
 ---
 
+## Troubleshooting
+
+### App crashes immediately when dumping
+
+**Root cause:** Some apps crash when Frida spawns the process. Frida's default spawn-gating holds the process suspended while injecting the agent, and certain apps (or their runtime initialisation) do not survive this sequence — even before any app code has run.
+
+**Solution:** Launch the app manually from the device UI, then run `idump` while it is in the foreground. `idump` checks whether the target is already running; if so, it skips the spawn and attaches directly to the live process:
+
+```bash
+# 1. Open the app on the device
+# 2. Keep it in the foreground
+idump com.example.App
+```
+
+> **Tip:** If `--dodge` or `--dodge=advanced` is also set and the app is already running, the bypass script is still injected — but as a live injection rather than at spawn, so detection hooks that fired before attachment will not be neutralised.
+
+### Attach hangs or times out when the app is in the background
+
+**Root cause:** iOS suspends backgrounded processes. Frida cannot attach to a suspended process and will block indefinitely.
+
+**Solution:** Bring the app to the foreground before running `idump`. If the app is backgrounded, `idump` will time out after 10 seconds and print:
+
+```
+✗  attach timed out — app may be in the background; bring it to the foreground and retry
+```
+
+---
+
 ## Development
 
 ### Prerequisites

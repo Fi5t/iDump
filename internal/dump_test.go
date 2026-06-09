@@ -28,7 +28,7 @@ func TestHandleFridaMessage_Done(t *testing.T) {
 
 	state := newTestState()
 	msg := `{"type":"send","payload":{"done":true}}`
-	if err := handleFridaMessage(msg, nil, nil, t.TempDir(), state); err != nil {
+	if err := handleFridaMessage(msg, nil, nil, nil, t.TempDir(), state); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -43,9 +43,9 @@ func TestHandleFridaMessage_DoneIsSafeWhenCalledTwice(t *testing.T) {
 
 	state := newTestState()
 	msg := `{"type":"send","payload":{"done":true}}`
-	_ = handleFridaMessage(msg, nil, nil, t.TempDir(), state)
+	_ = handleFridaMessage(msg, nil, nil, nil, t.TempDir(), state)
 	// Must not panic on second call.
-	_ = handleFridaMessage(msg, nil, nil, t.TempDir(), state)
+	_ = handleFridaMessage(msg, nil, nil, nil, t.TempDir(), state)
 }
 
 func TestHandleFridaMessage_ErrorType(t *testing.T) {
@@ -53,7 +53,7 @@ func TestHandleFridaMessage_ErrorType(t *testing.T) {
 
 	state := newTestState()
 	msg := `{"type":"error","description":"script crashed","stack":"at line 1"}`
-	if err := handleFridaMessage(msg, nil, nil, t.TempDir(), state); err != nil {
+	if err := handleFridaMessage(msg, nil, nil, nil, t.TempDir(), state); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -74,7 +74,7 @@ func TestHandleFridaMessage_USBDump(t *testing.T) {
 
 	fileData := []byte("fake decrypted binary")
 	msg := `{"type":"send","payload":{"dump":"MyApp","path":"/var/containers/Bundle/App.app/MyApp","size":21}}`
-	if err := handleFridaMessage(msg, fileData, nil, tmpDir, state); err != nil {
+	if err := handleFridaMessage(msg, fileData, nil, nil, tmpDir, state); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,7 +103,7 @@ func TestHandleFridaMessage_AppFile(t *testing.T) {
 
 	fileData := []byte("<plist/>")
 	msg := `{"type":"send","payload":{"app_file":"Info.plist","app":"MyApp.app","size":8}}`
-	if err := handleFridaMessage(msg, fileData, nil, tmpDir, state); err != nil {
+	if err := handleFridaMessage(msg, fileData, nil, nil, tmpDir, state); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,11 +116,31 @@ func TestHandleFridaMessage_AppFile(t *testing.T) {
 	}
 
 	state.mu.Lock()
-	appName := state.fileDict["app"]
+	appName := state.appName
 	state.mu.Unlock()
 
 	if appName != "MyApp.app" {
-		t.Errorf("fileDict[app] = %q, want %q", appName, "MyApp.app")
+		t.Errorf("appName = %q, want %q", appName, "MyApp.app")
+	}
+}
+
+func TestHandleFridaMessage_LogTypeDoesNotAffectState(t *testing.T) {
+	t.Parallel()
+
+	state := newTestState()
+	msg := `{"type":"log","level":"info","payload":"hello"}`
+	if err := handleFridaMessage(msg, nil, nil, nil, t.TempDir(), state); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-state.done:
+		t.Fatal("done should not be closed for a log message")
+	default:
+	}
+	select {
+	case e := <-state.err:
+		t.Fatalf("log message must not push error, got: %v", e)
+	default:
 	}
 }
 
@@ -128,13 +148,13 @@ func TestHandleFridaMessage_UnknownTypeIsIgnored(t *testing.T) {
 	t.Parallel()
 
 	state := newTestState()
-	msg := `{"type":"log","payload":{"level":"info","message":"hello"}}`
-	if err := handleFridaMessage(msg, nil, nil, t.TempDir(), state); err != nil {
+	msg := `{"type":"send-batch","payload":{"foo":"bar"}}`
+	if err := handleFridaMessage(msg, nil, nil, nil, t.TempDir(), state); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-state.done:
-		t.Fatal("done should not be closed for a log message")
+		t.Fatal("done should not be closed for unknown type")
 	default:
 	}
 }
@@ -150,11 +170,11 @@ func TestHandleFridaMessage_AppFileChunkZeroTruncates(t *testing.T) {
 	state := newTestState()
 
 	msg1 := `{"type":"send","payload":{"app_file":"res.txt","app":"MyApp.app","chunks":1}}`
-	if err := handleFridaMessage(msg1, []byte("first"), nil, tmpDir, state); err != nil {
+	if err := handleFridaMessage(msg1, []byte("first"), nil, nil, tmpDir, state); err != nil {
 		t.Fatal(err)
 	}
 	msg2 := `{"type":"send","payload":{"app_file":"res.txt","app":"MyApp.app","chunks":1}}`
-	if err := handleFridaMessage(msg2, []byte("second"), nil, tmpDir, state); err != nil {
+	if err := handleFridaMessage(msg2, []byte("second"), nil, nil, tmpDir, state); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,7 +203,7 @@ func TestHandleFridaMessage_ConcurrentDumps(t *testing.T) {
 				`{"type":"send","payload":{"dump":"bin%d","path":"/App.app/bin%d","size":4}}`,
 				idx, idx,
 			)
-			_ = handleFridaMessage(msg, []byte("data"), nil, tmpDir, state)
+			_ = handleFridaMessage(msg, []byte("data"), nil, nil, tmpDir, state)
 		}(i)
 	}
 	wg.Wait()
@@ -216,10 +236,10 @@ func TestHandleFridaMessage_USBDumpMultiChunk(t *testing.T) {
 		total,
 	)
 
-	if err := handleFridaMessage(msg0, chunk0, nil, tmpDir, state); err != nil {
+	if err := handleFridaMessage(msg0, chunk0, nil, nil, tmpDir, state); err != nil {
 		t.Fatal(err)
 	}
-	if err := handleFridaMessage(msg1, chunk1, nil, tmpDir, state); err != nil {
+	if err := handleFridaMessage(msg1, chunk1, nil, nil, tmpDir, state); err != nil {
 		t.Fatal(err)
 	}
 

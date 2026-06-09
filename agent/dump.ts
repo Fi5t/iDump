@@ -93,8 +93,7 @@ function swap32(value: number): number {
            ((value >>> 24)       & 0xff);
 }
 
-// 32 MB per message — well under GLib/DBus's 128 MB hard cap.
-const CHUNK_SIZE = 32 * 1024 * 1024;
+const CHUNK_SIZE = 4 * 1024 * 1024;
 const chunkBuf   = Memory.alloc(CHUNK_SIZE);
 
 interface ModuleFiles {
@@ -310,11 +309,12 @@ function sendFileChunked(payload: object, filePath: string): void {
             Object.assign({}, payload, { size: totalSize, chunk: i, chunks: numChunks }),
             chunkBuf.readByteArray(bytesRead)
         );
+        recv("ack", function (_msg: any) {}).wait();
     }
     close(fd);
 }
 
-function sendAppBundleViaFrida(appPath: string): void {
+function sendAppBundleViaFrida(appPath: string, dumpedPaths: Set<string>): void {
     const appBaseName = appPath.split("/").pop();
     const fm          = ObjC.classes.NSFileManager.defaultManager();
     const nsAppPath   = ObjC.classes.NSString.stringWithString_(appPath);
@@ -348,6 +348,8 @@ function sendAppBundleViaFrida(appPath: string): void {
         if (sentRealPaths.has(realPath)) continue;
         sentRealPaths.add(realPath);
 
+        if (dumpedPaths.has(fullPath) || dumpedPaths.has(realPath)) continue;
+
         sendFileChunked({ app_file: relPath, app: appBaseName }, fullPath);
     }
 }
@@ -357,11 +359,16 @@ function handleMessage(message: { mode?: string }): void {
 
     modules = getAllAppModules();
     const app_path = ObjC.classes.NSBundle.mainBundle().bundlePath();
-    loadAllDynamicLibrary(app_path);
-    modules = getAllAppModules();
+    if (!isUsb) {
+        loadAllDynamicLibrary(app_path);
+        modules = getAllAppModules();
+    }
+    const dumpedPaths = new Set<string>();
     for (let i = 0; i < modules.length; i++) {
         const result = dumpModule(modules[i].path);
         if (!result) continue;
+
+        dumpedPaths.add(modules[i].path);
 
         if (isUsb) {
             const basename = result.split("/").pop();
@@ -373,7 +380,7 @@ function handleMessage(message: { mode?: string }): void {
     }
 
     if (isUsb) {
-        sendAppBundleViaFrida(app_path.toString());
+        sendAppBundleViaFrida(app_path.toString(), dumpedPaths);
     } else {
         send({ app: app_path.toString() });
     }

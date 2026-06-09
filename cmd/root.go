@@ -29,6 +29,7 @@ import (
 	"os/signal"
 
 	"github.com/Fi5t/idump/internal"
+	idumplog "github.com/Fi5t/idump/internal/log"
 	"github.com/Fi5t/idump/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -42,7 +43,10 @@ var (
 	skipSystem bool
 	filter     string
 	outputDir  string
+	debug      bool
 )
+
+var debugCloser func() error
 
 type alreadyDisplayed struct{ cause error }
 
@@ -55,6 +59,25 @@ var rootCmd = &cobra.Command{
 	Use:           "idump [flags] [target ...]",
 	Short:         "Decrypt and dump iOS app binaries to an IPA file via USB",
 	Args:          cobra.ArbitraryArgs,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		path, closer, err := idumplog.Init(debug)
+		if err != nil {
+			return err
+		}
+		debugCloser = closer
+		if path != "" {
+			ui.Step("Debug log: " + path)
+		}
+		return nil
+	},
+	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+		if debugCloser != nil {
+			err := debugCloser()
+			debugCloser = nil
+			return err
+		}
+		return nil
+	},
 	Long: `idump decrypts and dumps iOS app binaries from a USB-connected device using Frida.
 
 File contents are transferred directly through Frida messages — no SSH required.
@@ -73,7 +96,7 @@ Examples:
   idump --early bypass.js com.example.App  Dump with custom bypass script
   idump remote --help                    Dump via SSH/SFTP instead`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		bypassScript, err := resolveBypassScript(dodgeTier, earlyPath)
+		bypassScript, bypassAgent, err := resolveBypassScript(dodgeTier, earlyPath)
 		if err != nil {
 			return err
 		}
@@ -112,7 +135,7 @@ Examples:
 			if len(targets) > 1 {
 				ui.Step(fmt.Sprintf("[%d/%d] %s", i+1, len(targets), target))
 			}
-			r := dumpOne(ctx, device, target, bypassScript, effectiveOutputDir, ipaOverride, nil)
+			r := dumpOne(ctx, device, target, bypassScript, bypassAgent, effectiveOutputDir, ipaOverride, nil)
 			results = append(results, r)
 			if r.Err != nil {
 				ui.Err(r.Err.Error())
@@ -132,6 +155,12 @@ Examples:
 
 func Execute() {
 	err := rootCmd.Execute()
+	if debugCloser != nil {
+		if cerr := debugCloser(); cerr != nil {
+			fmt.Fprintln(os.Stderr, "close debug log:", cerr)
+		}
+		debugCloser = nil
+	}
 	if err != nil {
 		var ad alreadyDisplayed
 		if !errors.As(err, &ad) {
@@ -142,6 +171,7 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Write a detailed trace of the dump to ./idump-debug-<UTC-timestamp>.log")
 	rootCmd.Flags().BoolVarP(&listApps, "list", "l", false, "List installed apps")
 	rootCmd.Flags().StringVarP(&outputIPA, "output", "o", "", "Output IPA filename (default: app display name; single-app only)")
 	registerBypassFlags(rootCmd, &dodgeTier, &earlyPath)

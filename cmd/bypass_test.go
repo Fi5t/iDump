@@ -22,25 +22,29 @@ func TestResolveBypassScript(t *testing.T) {
 		earlyPath  string
 		wantErr    bool
 		wantScript string
+		wantAgent  string
 	}{
-		{"no flags", "", "", false, ""},
-		{"basic tier", "basic", "", false, internal.BypassJS},
-		{"advanced tier", "advanced", "", false, internal.AdvancedBypassJS},
-		{"unknown tier", "unknown", "", true, ""},
-		{"dodge and early mutually exclusive", "basic", jsFile, true, ""},
-		{"early js file", "", jsFile, false, "// custom bypass"},
-		{"early nonexistent file", "", "nonexistent.js", true, ""},
+		{"no flags", "", "", false, "", ""},
+		{"basic tier", "basic", "", false, internal.BypassJS, "bypass"},
+		{"advanced tier", "advanced", "", false, internal.AdvancedBypassJS, "bypass_advanced"},
+		{"unknown tier", "unknown", "", true, "", ""},
+		{"dodge and early mutually exclusive", "basic", jsFile, true, "", ""},
+		{"early js file", "", jsFile, false, "// custom bypass", "early"},
+		{"early nonexistent file", "", "nonexistent.js", true, "", ""},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := resolveBypassScript(tc.tier, tc.earlyPath)
+			got, gotAgent, err := resolveBypassScript(tc.tier, tc.earlyPath)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("resolveBypassScript(%q, %q) error = %v, wantErr %v", tc.tier, tc.earlyPath, err, tc.wantErr)
 			}
 			if !tc.wantErr && got != tc.wantScript {
-				t.Errorf("resolveBypassScript(%q, %q) = %q, want %q", tc.tier, tc.earlyPath, got, tc.wantScript)
+				t.Errorf("resolveBypassScript(%q, %q) script = %q, want %q", tc.tier, tc.earlyPath, got, tc.wantScript)
+			}
+			if !tc.wantErr && gotAgent != tc.wantAgent {
+				t.Errorf("resolveBypassScript(%q, %q) agent = %q, want %q", tc.tier, tc.earlyPath, gotAgent, tc.wantAgent)
 			}
 		})
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,19 @@ import (
 	"github.com/Fi5t/idump/internal/ui"
 )
 
+type FridaMessage struct {
+	Type        string          `json:"type"`
+	Payload     json.RawMessage `json:"payload"`
+	Description string          `json:"description"`
+	Stack       string          `json:"stack"`
+	Level       string          `json:"level"`
+}
+
+type fridaEvent struct {
+	msg  string
+	data []byte
+}
+
 type dumpState struct {
 	mu        sync.Mutex
 	once      sync.Once
@@ -28,6 +42,7 @@ type dumpState struct {
 	done      chan struct{}
 	err       chan error
 	spinner   *spinner.Spinner
+	appName   string
 }
 
 func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Client, payloadPath, outputDir, ipaName string) (err error) {
@@ -60,13 +75,13 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 	// while a download was in progress.
 	// The GLib thread delivers messages one at a time (never re-enters until the
 	// callback returns), so the channel is always filled in arrival order.
-	msgCh := make(chan [2][]byte, 512)
+	msgCh := make(chan fridaEvent, 512)
 
 	// Register BEFORE Load so frida-go's Load() sees hasHandler=true and skips
 	// its internal connectClosure call — otherwise the signal fires twice per message.
 	script.On("message", func(message string, data []byte) {
 		select {
-		case msgCh <- [2][]byte{[]byte(message), data}:
+		case msgCh <- fridaEvent{msg: message, data: data}:
 		default:
 			select {
 			case state.err <- errors.New("message queue overflow: agent sent too many messages"):
@@ -75,44 +90,51 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 		}
 	})
 
+	procCtx, procCancel := context.WithCancel(ctx)
+	defer procCancel()
+
 	go func() {
 		for {
 			select {
-			case pair, ok := <-msgCh:
+			case ev, ok := <-msgCh:
 				if !ok {
 					return
 				}
-				if err := handleFridaMessage(string(pair[0]), pair[1], sftpClient, payloadPath, state); err != nil {
+				if err := handleFridaMessage(ev.msg, ev.data, script, sftpClient, payloadPath, state); err != nil {
 					select {
 					case state.err <- err:
 					default:
 					}
 					return
 				}
-			case <-ctx.Done():
+			case <-procCtx.Done():
 				return
 			}
 		}
 	}()
 
 	session.On("detached", func(reason frida.SessionDetachReason, crash *frida.Crash) {
+		slog.Debug("frida.detached", "reason", reason.String(), "crash", crash != nil)
 		select {
 		case state.err <- fmt.Errorf("session detached: %s", reason):
 		default:
 		}
 	})
 
+	loadStart := time.Now()
 	if err := script.Load(); err != nil {
 		spin.Stop()
 		return fmt.Errorf("load script: %w", err)
 	}
+	slog.Debug("dump.script_loaded", "elapsed_ms", time.Since(loadStart).Milliseconds())
 
-	// USB mode: tell the script to send file contents through Frida messages.
-	// SSH mode: script only sends paths; host downloads via SFTP.
 	trigger := `"dump"`
+	mode := "ssh"
 	if sftpClient == nil {
 		trigger = `{"mode":"usb"}`
+		mode = "usb"
 	}
+	slog.Debug("dump.trigger", "mode", mode)
 	script.Post(trigger, nil)
 
 	select {
@@ -125,13 +147,17 @@ func StartDump(ctx context.Context, session *frida.Session, sftpClient *sftp.Cli
 		return jsErr
 	}
 
+	spin.Lock()
 	spin.Suffix = " Creating IPA..."
+	spin.Unlock()
 	spin.Restart()
 
-	if err := GenerateIPA(payloadPath, outputDir, ipaName, state.fileDict); err != nil {
+	ipaStart := time.Now()
+	if err := GenerateIPA(payloadPath, outputDir, ipaName, state.appName, state.fileDict); err != nil {
 		spin.Stop()
 		return fmt.Errorf("generate IPA: %w", err)
 	}
+	slog.Debug("dump.ipa_generated", "elapsed_ms", time.Since(ipaStart).Milliseconds())
 
 	spin.Stop()
 	ipaPath := filepath.Join(outputDir, ipaName+".ipa")
@@ -178,17 +204,21 @@ func strVal(v interface{}) string {
 	return ""
 }
 
-func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, payloadPath string, state *dumpState) error {
-	var msg struct {
-		Type        string                 `json:"type"`
-		Payload     map[string]interface{} `json:"payload"`
-		Description string                 `json:"description"`
-		Stack       string                 `json:"stack"`
-	}
+func handleFridaMessage(message string, data []byte, script *frida.Script, sftpClient *sftp.Client, payloadPath string, state *dumpState) error {
+	var msg FridaMessage
 	if err := json.Unmarshal([]byte(message), &msg); err != nil {
 		return nil //nolint:nilerr // malformed Frida messages are silently skipped
 	}
+	if msg.Type == "log" {
+		var text string
+		if uerr := json.Unmarshal(msg.Payload, &text); uerr != nil {
+			text = string(msg.Payload)
+		}
+		slog.Debug("frida.log", "agent", "dump", "level", msg.Level, "msg", text)
+		return nil
+	}
 	if msg.Type == "error" {
+		slog.Error("frida.error", "agent", "dump", "description", msg.Description, "stack", msg.Stack)
 		if msg.Stack != "" {
 			ui.Warn("JS stack:\n" + msg.Stack)
 		}
@@ -199,11 +229,14 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		}
 		return nil // error forwarded to state.err; return nil so the goroutine keeps running
 	}
-	if msg.Type != "send" || msg.Payload == nil {
+	if msg.Type != "send" {
 		return nil
 	}
 
-	payload := msg.Payload
+	var payload map[string]interface{}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil || payload == nil {
+		return nil //nolint:nilerr // non-object payloads are not addressed by this handler
+	}
 
 	if dumpVal, ok := payload["dump"]; ok {
 		originPath := strVal(payload["path"])
@@ -215,19 +248,34 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 
 		if sftpClient == nil {
 			basename := strVal(dumpVal)
+			if basename == "" {
+				return errors.New("dump: missing binary name in payload")
+			}
 			chunk := intPayload(payload, "chunk", 0)
 			numChunks := intPayload(payload, "chunks", 1)
 			totalSize := int64(intPayload(payload, "size", 0))
 			localPath := filepath.Join(payloadPath, basename)
+			if chunk == 0 {
+				slog.Debug("dump.file_start", "name", basename, "size", totalSize, "chunks", numChunks)
+			}
+			slog.Debug("dump.chunk_received", "file", basename, "chunk", chunk, "of", numChunks, "data_bytes", len(data))
 			state.mu.Lock()
 			state.fileBytes[basename] += int64(len(data))
 			received := state.fileBytes[basename]
-			state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", ui.FmtSize(received), ui.FmtSize(totalSize), basename)
 			state.mu.Unlock()
+			state.spinner.Lock()
+			state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", ui.FmtSize(received), ui.FmtSize(totalSize), basename)
+			state.spinner.Unlock()
 			if err := appendChunk(localPath, data, chunk); err != nil {
 				return fmt.Errorf("write %s chunk %d: %w", basename, chunk, err)
 			}
+			ackT0 := time.Now()
+			if script != nil {
+				script.Post(`{"type":"ack"}`, nil)
+			}
+			slog.Debug("dump.ack_posted", "file", basename, "chunk", chunk, "elapsed_ms", time.Since(ackT0).Milliseconds())
 			if chunk == numChunks-1 {
+				slog.Debug("dump.file_done", "name", basename, "received", received)
 				state.mu.Lock()
 				state.fileDict[basename] = relPath
 				state.mu.Unlock()
@@ -235,12 +283,14 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		} else {
 			remotePath := strVal(dumpVal)
 			localPath := filepath.Join(payloadPath, filepath.Base(remotePath))
+			slog.Debug("dump.sftp_file_start", "remote", remotePath, "local", localPath)
 			if err := sftpDownloadFile(sftpClient, remotePath, localPath, state.spinner); err != nil {
 				return fmt.Errorf("download %s: %w", remotePath, err)
 			}
 			if err := os.Chmod(localPath, 0o644); err != nil { //nolint:gosec // payload file permissions
 				ui.Warn(fmt.Sprintf("chmod %s: %v", localPath, err))
 			}
+			slog.Debug("dump.sftp_file_done", "remote", remotePath)
 			state.mu.Lock()
 			state.fileDict[filepath.Base(remotePath)] = relPath
 			state.mu.Unlock()
@@ -249,7 +299,13 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 
 	if appFileVal, ok := payload["app_file"]; ok {
 		relPath := strVal(appFileVal)
+		if relPath == "" {
+			return errors.New("app_file: missing file path in payload")
+		}
 		appBaseName := strVal(payload["app"])
+		if appBaseName == "" {
+			return errors.New("app_file: missing app name in payload")
+		}
 		chunk := intPayload(payload, "chunk", 0)
 		numChunks := intPayload(payload, "chunks", 1)
 
@@ -261,18 +317,30 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 		}
 		totalSize := int64(intPayload(payload, "size", 0))
 		label := filepath.Join(appBaseName, relPath)
+		if chunk == 0 {
+			slog.Debug("dump.app_file_start", "name", label, "size", totalSize, "chunks", numChunks)
+		}
+		slog.Debug("dump.app_chunk_received", "file", label, "chunk", chunk, "of", numChunks, "data_bytes", len(data))
 		state.mu.Lock()
 		state.fileBytes[label] += int64(len(data))
 		received := state.fileBytes[label]
-		state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", ui.FmtSize(received), ui.FmtSize(totalSize), label)
 		state.mu.Unlock()
+		state.spinner.Lock()
+		state.spinner.Suffix = fmt.Sprintf(" [%s / %s] %s", ui.FmtSize(received), ui.FmtSize(totalSize), label)
+		state.spinner.Unlock()
 		if err := appendChunk(localPath, data, chunk); err != nil {
 			return fmt.Errorf("write app_file %s chunk %d: %w", relPath, chunk, err)
 		}
+		ackT0 := time.Now()
+		if script != nil {
+			script.Post(`{"type":"ack"}`, nil)
+		}
+		slog.Debug("dump.ack_posted", "file", label, "chunk", chunk, "elapsed_ms", time.Since(ackT0).Milliseconds())
 
 		if chunk == numChunks-1 {
+			slog.Debug("dump.app_file_done", "name", label, "received", received)
 			state.mu.Lock()
-			state.fileDict["app"] = appBaseName
+			state.appName = appBaseName
 			state.mu.Unlock()
 		}
 		return nil
@@ -280,16 +348,19 @@ func handleFridaMessage(message string, data []byte, sftpClient *sftp.Client, pa
 
 	if appVal, ok := payload["app"]; ok && sftpClient != nil {
 		remotePath := strVal(appVal)
+		slog.Debug("dump.sftp_app_dir_start", "remote", remotePath)
 		if err := sftpDownloadDir(sftpClient, remotePath, payloadPath, state.spinner); err != nil {
 			return fmt.Errorf("download app dir %s: %w", remotePath, err)
 		}
 		chmodR(filepath.Join(payloadPath, filepath.Base(remotePath)), 0o750)
+		slog.Debug("dump.sftp_app_dir_done", "remote", remotePath)
 		state.mu.Lock()
-		state.fileDict["app"] = filepath.Base(remotePath)
+		state.appName = filepath.Base(remotePath)
 		state.mu.Unlock()
 	}
 
 	if _, ok := payload["done"]; ok {
+		slog.Debug("dump.agent_done")
 		state.once.Do(func() { close(state.done) })
 	}
 
@@ -318,10 +389,18 @@ func sftpDownloadFile(client *sftp.Client, remotePath, localPath string, spin *s
 	if stat, serr := rf.Stat(); serr == nil {
 		totalSize = stat.Size()
 	}
+	spin.Lock()
 	spin.Suffix = fmt.Sprintf(" [0 B / %s] %s", ui.FmtSize(totalSize), name)
-	if _, cerr := io.Copy(lf, &countingReader{r: rf, spin: spin, name: name, total: totalSize}); cerr != nil {
+	spin.Unlock()
+	start := time.Now()
+	cr := &countingReader{r: rf, spin: spin, name: name, total: totalSize}
+	if _, cerr := io.Copy(lf, cr); cerr != nil {
 		err = fmt.Errorf("copy %s: %w", remotePath, cerr)
 	}
+	slog.Debug("sftp.file_downloaded",
+		"remote", remotePath,
+		"bytes", cr.n,
+		"elapsed_ms", time.Since(start).Milliseconds())
 	return err
 }
 
@@ -338,7 +417,9 @@ func (cr *countingReader) Read(p []byte) (n int, err error) {
 	n, err = cr.r.Read(p)
 	cr.n += int64(n)
 	if cr.n-cr.lastPrint >= 64*1024 || err == io.EOF {
+		cr.spin.Lock()
 		cr.spin.Suffix = fmt.Sprintf(" [%s / %s] %s", ui.FmtSize(cr.n), ui.FmtSize(cr.total), cr.name)
+		cr.spin.Unlock()
 		cr.lastPrint = cr.n
 	}
 	return

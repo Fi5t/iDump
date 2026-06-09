@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"golang.org/x/term"
@@ -39,17 +40,21 @@ func FmtSize(b int64) string {
 }
 
 func Step(msg string) {
+	slog.Debug("ui.step", "msg", msg)
 	fmt.Printf("  %s  %s\n", colorize(stdoutColor, dim, "→"), msg)
 }
 
 func OK(msg string) {
+	slog.Info("ui.ok", "msg", msg)
 	fmt.Printf("  %s  %s\n", colorize(stdoutColor, green, "✓"), msg)
 }
 
 func Warn(msg string) {
+	slog.Warn("ui.warn", "msg", msg)
 	fmt.Fprintf(os.Stderr, "  %s  %s\n", colorize(stderrColor, yellow, "⚠"), msg)
 }
 
 func Err(msg string) {
+	slog.Error("ui.err", "msg", msg)
 	fmt.Fprintf(os.Stderr, "  %s  %s\n", colorize(stderrColor, red, "✗"), msg)
 }

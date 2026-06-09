@@ -26,12 +26,11 @@ func TestGenerateIPA_CreatesValidZip(t *testing.T) {
 	}
 
 	fileDict := map[string]string{
-		"app":   "MyApp.app",
 		"MyApp": "MyApp",
 	}
 
 	const ipaName = "test_generate_ipa"
-	if err := GenerateIPA(payloadPath, outputDir, ipaName, fileDict); err != nil {
+	if err := GenerateIPA(payloadPath, outputDir, ipaName, "MyApp.app", fileDict); err != nil {
 		t.Fatalf("GenerateIPA: %v", err)
 	}
 
@@ -66,9 +65,9 @@ func TestGenerateIPA_MissingAppKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := GenerateIPA(payloadPath, t.TempDir(), "out", map[string]string{})
+	err := GenerateIPA(payloadPath, t.TempDir(), "out", "", map[string]string{})
 	if err == nil {
-		t.Fatal("expected error for missing 'app' key in fileDict")
+		t.Fatal("expected error for empty appName")
 	}
 }
 
@@ -86,7 +85,7 @@ func TestGenerateIPA_PayloadPreservedAfterSuccess(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	if err := GenerateIPA(payloadPath, outputDir, "test_cleanup_ipa", map[string]string{"app": "App.app"}); err != nil {
+	if err := GenerateIPA(payloadPath, outputDir, "test_cleanup_ipa", "App.app", map[string]string{}); err != nil {
 		t.Fatalf("GenerateIPA: %v", err)
 	}
 

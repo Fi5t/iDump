@@ -154,6 +154,7 @@ idump remote --dodge=advanced com.example.App
 | `--dodge` | — | — | Basic bypass: hooks libc symbols via spawn-gating |
 | `--dodge=advanced` | — | — | Advanced bypass for hardened apps (raw syscall hooks, environ scrub, VM scan) |
 | `--early` | — | — | Path to custom bypass script (`.js` or `.ts`); mutually exclusive with `--dodge` |
+| `--debug` | — | — | Write a detailed trace of the dump to `./idump-debug-<UTC-timestamp>.log` (works in both modes) |
 
 **SSH/SFTP mode (`idump remote`):**
 
@@ -172,10 +173,22 @@ idump remote --dodge=advanced com.example.App
 | `--dodge` | — | — | Basic bypass: hooks libc symbols via spawn-gating |
 | `--dodge=advanced` | — | — | Advanced bypass for hardened apps (raw syscall hooks, environ scrub, VM scan) |
 | `--early` | — | — | Path to custom bypass script (`.js` or `.ts`); mutually exclusive with `--dodge` |
+| `--debug` | — | — | Write a detailed trace of the dump to `./idump-debug-<UTC-timestamp>.log` (inherited from root) |
 
 ---
 
 ## Troubleshooting
+
+### Diagnose any failure with `--debug`
+
+If a dump fails for a reason that is not covered below, re-run the same command with `--debug`. A detailed trace — spawn/attach steps, bypass script load, Frida agent `console.log` and `console.error` output, per-file progress, SFTP timings, IPA zip, and the session detach reason — is written to `./idump-debug-<UTC-timestamp>.log` in the current directory. The log path is printed at the start of the run. Attach this file when filing an issue.
+
+```bash
+idump --debug com.example.App
+idump remote --debug com.example.App
+idump --debug --dodge=advanced com.example.App
+idump --debug --dump-all --skip-system   # single log for all targets
+```
 
 ### App crashes immediately when dumping
 

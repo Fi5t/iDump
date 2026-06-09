@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,10 +31,13 @@ func dumpOne(
 	device frida.DeviceInt,
 	target string,
 	bypassScript string,
+	bypassAgent string,
 	outputDir string,
 	ipaOverride string,
 	sftpClient *sftp.Client,
 ) DumpResult {
+	slog.Debug("dump.target_start", "target", target, "bypass_agent", bypassAgent, "mode", dumpModeLabel(sftpClient))
+
 	baseDir, err := os.MkdirTemp("", "idump-payload-*")
 	if err != nil {
 		return DumpResult{Target: target, Err: fmt.Errorf("temp dir: %w", err)}
@@ -52,7 +56,7 @@ func dumpOne(
 		outputDir = abs
 	}
 
-	session, displayName, err := internal.OpenApp(ctx, device, target, bypassScript)
+	session, displayName, err := internal.OpenApp(ctx, device, target, bypassScript, bypassAgent)
 	if err != nil {
 		return DumpResult{Target: target, Err: err}
 	}
@@ -71,6 +75,13 @@ func dumpOne(
 		DisplayName: displayName,
 		IPAPath:     filepath.Join(outputDir, ipaName+".ipa"),
 	}
+}
+
+func dumpModeLabel(sftpClient *sftp.Client) string {
+	if sftpClient == nil {
+		return "usb"
+	}
+	return "ssh"
 }
 
 // When dumpAll is false it returns args unchanged.
@@ -177,7 +188,12 @@ func resolveOutputArgs(outputFlag, defaultDir string) (ipaOverride, effectiveDir
 	if outputFlag == "" {
 		return
 	}
-	ipaOverride = strings.TrimSuffix(filepath.Base(outputFlag), ".ipa")
+	base := filepath.Base(outputFlag)
+	if strings.EqualFold(filepath.Ext(base), ".ipa") {
+		ipaOverride = base[:len(base)-len(".ipa")]
+	} else {
+		ipaOverride = base
+	}
 	if dir := filepath.Dir(outputFlag); dir != "." {
 		effectiveDir = dir
 	}

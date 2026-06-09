@@ -34,27 +34,27 @@ const (
 	bypassTierAdvanced = "advanced"
 )
 
-func resolveBypassScript(tier, earlyPath string) (string, error) {
+func resolveBypassScript(tier, earlyPath string) (script, agent string, err error) {
 	if tier != "" && tier != bypassTierBasic && tier != bypassTierAdvanced {
-		return "", fmt.Errorf("--dodge: unknown tier %q (use %q or %q)", tier, bypassTierBasic, bypassTierAdvanced)
+		return "", "", fmt.Errorf("--dodge: unknown tier %q (use %q or %q)", tier, bypassTierBasic, bypassTierAdvanced)
 	}
 	if tier != "" && earlyPath != "" {
-		return "", errors.New("--dodge and --early are mutually exclusive")
+		return "", "", errors.New("--dodge and --early are mutually exclusive")
 	}
 	switch tier {
 	case bypassTierAdvanced:
-		return internal.AdvancedBypassJS, nil
+		return internal.AdvancedBypassJS, "bypass_advanced", nil
 	case bypassTierBasic:
-		return internal.BypassJS, nil
+		return internal.BypassJS, "bypass", nil
 	}
 	if earlyPath != "" {
 		s, err := internal.CompileOrLoad(earlyPath)
 		if err != nil {
-			return "", fmt.Errorf("bypass script: %w", err)
+			return "", "", fmt.Errorf("bypass script: %w", err)
 		}
-		return s, nil
+		return s, "early", nil
 	}
-	return "", nil
+	return "", "", nil
 }
 
 func registerBypassFlags(cmd *cobra.Command, tier, early *string) {

@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"time"
 
 	"github.com/Fi5t/idump/internal"
 	"github.com/Fi5t/idump/internal/ui"
@@ -79,7 +80,7 @@ Examples:
   idump remote --early bypass.js com.example.App`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		bypassScript, err := resolveBypassScript(remoteDodgeTier, remoteEarly)
+		bypassScript, bypassAgent, err := resolveBypassScript(remoteDodgeTier, remoteEarly)
 		if err != nil {
 			return err
 		}
@@ -126,7 +127,7 @@ Examples:
 			if len(targets) > 1 {
 				ui.Step(fmt.Sprintf("[%d/%d] %s", i+1, len(targets), target))
 			}
-			r := dumpOne(ctx, device, target, bypassScript, effectiveOutputDir, ipaOverride, sftpClient)
+			r := dumpOne(ctx, device, target, bypassScript, bypassAgent, effectiveOutputDir, ipaOverride, sftpClient)
 			results = append(results, r)
 			if r.Err != nil {
 				ui.Err(r.Err.Error())
@@ -169,15 +170,16 @@ func dialSSH(host string, port int, user, password, keyFile string) (*ssh.Client
 			return nil, fmt.Errorf("parse private key: %w", err)
 		}
 		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	} else {
+		authMethods = append(authMethods, ssh.Password(password))
 	}
-
-	authMethods = append(authMethods, ssh.Password(password))
 
 	ui.Warn("SSH host key verification is disabled — ensure you trust the network")
 	cfg := &ssh.ClientConfig{
 		User:            user,
 		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // connecting to a known trusted iOS device
+		Timeout:         15 * time.Second,
 	}
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))

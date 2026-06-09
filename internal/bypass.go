@@ -1,27 +1,52 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Fi5t/idump/internal/ui"
 	"github.com/frida/frida-go/frida"
 )
 
 // Call while the process is still suspended (before Resume) so hooks are in place before any app code runs.
-func InjectBypass(session *frida.Session, script string) error {
+func InjectBypass(session *frida.Session, script, agentName string) error {
 	s, err := session.CreateScript(script)
 	if err != nil {
 		return fmt.Errorf("create bypass script: %w", err)
 	}
 	s.On("message", func(message string, _ []byte) {
-		ui.Warn("bypass: " + message)
+		var msg FridaMessage
+		if uerr := json.Unmarshal([]byte(message), &msg); uerr != nil {
+			slog.Debug("frida.message", "agent", agentName, "raw", message)
+			return
+		}
+		switch msg.Type {
+		case "log":
+			var text string
+			if uerr := json.Unmarshal(msg.Payload, &text); uerr != nil {
+				text = string(msg.Payload)
+			}
+			slog.Debug("frida.log", "agent", agentName, "level", msg.Level, "msg", text)
+		case "error":
+			slog.Error("frida.error", "agent", agentName, "description", msg.Description, "stack", msg.Stack)
+			ui.Warn("bypass: " + msg.Description)
+		default:
+			slog.Debug("frida.message", "agent", agentName, "type", msg.Type, "raw", message)
+		}
 	})
+	start := time.Now()
 	if err := s.Load(); err != nil {
 		return fmt.Errorf("load bypass script: %w", err)
 	}
+	slog.Debug("bypass.loaded",
+		"agent", agentName,
+		"bytes", len(script),
+		"elapsed_ms", time.Since(start).Milliseconds())
 	return nil
 }
 

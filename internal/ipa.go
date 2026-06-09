@@ -6,22 +6,20 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
-func GenerateIPA(payloadPath, outputDir, ipaName string, fileDict map[string]string) error {
+func GenerateIPA(payloadPath, outputDir, ipaName, appName string, fileDict map[string]string) error {
 	ipaFilename := ipaName + ".ipa"
 
-	appName, ok := fileDict["app"]
-	if !ok {
-		return errors.New("app bundle name not found in file dict")
+	if appName == "" {
+		return errors.New("app bundle name is empty")
 	}
 
 	for key, relPath := range fileDict {
-		if key == "app" {
-			continue
-		}
 		src := filepath.Join(payloadPath, key)
 		dst := filepath.Join(payloadPath, appName, relPath)
 
@@ -34,9 +32,20 @@ func GenerateIPA(payloadPath, outputDir, ipaName string, fileDict map[string]str
 	}
 
 	zipPath := filepath.Join(outputDir, ipaFilename)
+	zipStart := time.Now()
 	if err := zipDir(filepath.Dir(payloadPath), "Payload", zipPath); err != nil {
 		return fmt.Errorf("zip: %w", err)
 	}
+	var zipSize int64
+	if info, statErr := os.Stat(zipPath); statErr == nil {
+		zipSize = info.Size()
+	}
+	slog.Debug("ipa.generated",
+		"path", zipPath,
+		"app", appName,
+		"entries", len(fileDict),
+		"bytes", zipSize,
+		"elapsed_ms", time.Since(zipStart).Milliseconds())
 
 	return nil
 }
@@ -90,9 +99,12 @@ func zipDir(baseDir, subDir, destZip string) (err error) {
 			return fmt.Errorf("open %s: %w", path, srcErr)
 		}
 		_, cpErr := io.Copy(fw, src)
-		_ = src.Close()
+		cerr := src.Close()
 		if cpErr != nil {
 			return fmt.Errorf("copy %s: %w", path, cpErr)
+		}
+		if cerr != nil {
+			return fmt.Errorf("close %s: %w", path, cerr)
 		}
 		return nil
 	}); werr != nil {

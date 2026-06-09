@@ -1,10 +1,12 @@
 package internal
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,7 @@ func GetUSBDevice(ctx context.Context) (frida.DeviceInt, error) {
 		if err == nil {
 			for _, d := range devices {
 				if d.DeviceType() == frida.DeviceTypeUsb {
+					slog.Debug("device.selected", "id", d.ID(), "name", d.Name())
 					return d, nil
 				}
 			}
@@ -48,6 +51,7 @@ func GetApplications(device frida.DeviceInt) ([]*frida.Application, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to enumerate applications: %w", err)
 	}
+	slog.Debug("device.applications_enumerated", "count", len(apps))
 	return apps, nil
 }
 
@@ -57,13 +61,16 @@ func ListApplications(device frida.DeviceInt) error {
 		return err
 	}
 
-	sort.SliceStable(apps, func(i, j int) bool {
-		iRunning := apps[i].PID() != 0
-		jRunning := apps[j].PID() != 0
-		if iRunning != jRunning {
-			return iRunning
+	slices.SortStableFunc(apps, func(a, b *frida.Application) int {
+		aRunning := a.PID() != 0
+		bRunning := b.PID() != 0
+		if aRunning != bRunning {
+			if aRunning {
+				return -1
+			}
+			return 1
 		}
-		return apps[i].Name() < apps[j].Name()
+		return cmp.Compare(a.Name(), b.Name())
 	})
 
 	pidW, nameW, idW := 3, 4, 10
@@ -131,6 +138,7 @@ func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID 
 
 	if res.PID != 0 {
 		ui.Step("App is already running, attaching directly")
+		slog.Debug("device.attach_running", "bundle", res.BundleID, "pid", res.PID)
 		attachCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		res.Session, err = device.AttachWithContext(attachCtx, res.PID, nil)
@@ -143,6 +151,7 @@ func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID 
 		return res, nil
 	}
 
+	slog.Debug("device.spawn", "bundle", res.BundleID)
 	spawnedPID, err := device.Spawn(res.BundleID, nil)
 	if err != nil {
 		return SpawnResult{}, fmt.Errorf("failed to spawn %s: %w", res.BundleID, err)
@@ -157,6 +166,7 @@ func SpawnAndAttach(ctx context.Context, device frida.DeviceInt, nameOrBundleID 
 
 	res.PID = spawnedPID
 	res.Suspended = true
+	slog.Debug("device.attached", "bundle", res.BundleID, "pid", res.PID, "suspended", res.Suspended)
 	return res, nil
 }
 
@@ -173,8 +183,9 @@ func OpenTargetApp(ctx context.Context, device frida.DeviceInt, nameOrBundleID s
 	return res.Session, res.DisplayName, res.BundleID, nil
 }
 
-func OpenApp(ctx context.Context, device frida.DeviceInt, target, bypassScript string) (*frida.Session, string, error) {
+func OpenApp(ctx context.Context, device frida.DeviceInt, target, bypassScript, bypassAgent string) (*frida.Session, string, error) {
 	if bypassScript != "" {
+		slog.Debug("device.open_app", "target", target, "bypass_agent", bypassAgent)
 		res, err := SpawnAndAttach(ctx, device, target)
 		if err != nil {
 			return nil, "", err
@@ -182,7 +193,7 @@ func OpenApp(ctx context.Context, device frida.DeviceInt, target, bypassScript s
 		if !res.Suspended {
 			ui.Warn("app was already running — bypass injected live, not at spawn; detection hooks may have already fired")
 		}
-		if err = InjectBypass(res.Session, bypassScript); err != nil {
+		if err = InjectBypass(res.Session, bypassScript, bypassAgent); err != nil {
 			if derr := res.Session.Detach(); derr != nil {
 				ui.Warn(fmt.Sprintf("detach after inject failure: %v", derr))
 			}
@@ -203,9 +214,11 @@ func OpenApp(ctx context.Context, device frida.DeviceInt, target, bypassScript s
 				}
 				return nil, "", fmt.Errorf("resume: %w", err)
 			}
+			slog.Debug("device.resumed", "pid", res.PID)
 		}
 		return res.Session, res.DisplayName, nil
 	}
+	slog.Debug("device.open_app", "target", target, "bypass_agent", "")
 	session, displayName, _, err := OpenTargetApp(ctx, device, target)
 	if err != nil {
 		return nil, "", err
